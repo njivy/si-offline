@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "si-offline-change-journal",
+  "title": "si-offline-change-journal",
+  "type": "object",
+  "required": ["format", "formatVersion", "sectionNumber", "entries"],
+  "properties": {
+    "format": { "const": "si-offline-change-journal" },
+    "formatVersion": { "const": 1 },
+    "sectionNumber": { "type": "string" },
+    "entries": { "type": "array" }
+  }
+}

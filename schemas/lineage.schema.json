@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "si-offline-lineage",
+  "title": "si-offline-lineage",
+  "type": "object",
+  "required": ["format", "formatVersion", "sectionNumber", "currentHash", "origin"],
+  "properties": {
+    "format": { "const": "si-offline-lineage" },
+    "formatVersion": { "const": 1 },
+    "sectionNumber": { "type": "string" },
+    "title": { "type": "string" },
+    "currentHash": { "type": "string", "pattern": "^sha256:" },
+    "origin": { "type": "object", "required": ["kind"] },
+    "parents": { "type": "array" }
+  }
+}
