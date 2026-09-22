@@ -1,0 +1,62 @@
+:root {
+  --bg: #0f1419;
+  --panel: #1a2332;
+  --panel-2: #243044;
+  --border: #3a4a5c;
+  --text: #e7ecf3;
+  --muted: #9aa8b8;
+  --accent: #3b82f6;
+  --banner: #7c2d12;
+  --banner-text: #ffedd5;
+  --paper: #f8fafc;
+  --paper-ink: #0f172a;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); min-height: 100vh; }
+#app { min-height: 100vh; display: flex; flex-direction: column; }
+.proposal-banner { background: var(--banner); color: var(--banner-text); padding: 0.55rem 1rem; font-size: 0.88rem; font-weight: 600; }
+.topbar { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; padding: 0.75rem 1rem; background: var(--panel); border-bottom: 1px solid var(--border); }
+.topbar h1 { margin: 0 auto 0 0; font-size: 1.15rem; }
+.topbar .meta { color: var(--muted); font-size: 0.85rem; }
+button, .btn { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem 0.75rem; cursor: pointer; font-size: 0.875rem; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.layout { display: grid; grid-template-columns: 300px minmax(0,1fr) 300px; flex: 1; min-height: 0; }
+@media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
+.sidebar, .qc-pane { background: var(--panel); overflow: auto; padding: 0.75rem; }
+.sidebar { border-right: 1px solid var(--border); }
+.qc-pane { border-left: 1px solid var(--border); }
+.sidebar h2, .qc-pane h2 { margin: 0 0 0.5rem; font-size: 0.78rem; text-transform: uppercase; color: var(--muted); }
+.section-list { list-style: none; margin: 0; padding: 0; }
+.toc-row { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.45rem 0.4rem; border-radius: 6px; cursor: pointer; font-size: 0.84rem; }
+.toc-row:hover { background: var(--panel-2); }
+.toc-row.active { background: #1e3a5f; outline: 1px solid var(--accent); }
+.toc-num { font-weight: 700; }
+.toc-title { color: var(--muted); font-size: 0.78rem; }
+.chip { display: inline-block; font-size: 0.65rem; font-weight: 700; text-transform: uppercase; padding: 0.12rem 0.4rem; border-radius: 999px; background: #1e3a8a; color: #bfdbfe; width: fit-content; }
+.chip.master { background: #14532d; color: #bbf7d0; }
+.chip.prior { background: #713f12; color: #fde68a; }
+.chip.imported { background: #334155; color: #cbd5e1; }
+.main { overflow: auto; padding: 1rem 1.25rem 2rem; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+.status { font-size: 0.85rem; color: var(--muted); }
+.status.error { color: #fca5a5; }
+.home-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1rem 0; }
+.home-actions input[type="file"] { display: none; }
+.file-btn { display: inline-flex; cursor: pointer; }
+.paper { background: var(--paper); color: var(--paper-ink); border-radius: 8px; padding: 1.25rem 1.5rem 2rem; line-height: 1.55; }
+.sec-title { margin: 0 0 1rem; font-size: 1.35rem; border-bottom: 1px solid #cbd5e1; padding-bottom: 0.5rem; }
+.note { border-left: 4px solid #2563eb; background: #dbeafe; padding: 0.45rem 0.7rem; margin: 0.6rem 0; }
+.tag.rid { background: #fef3c7; }
+.tag.sub { background: #dcfce7; }
+.tag.srf { background: #e0e7ff; }
+.bracket { background: #ffe4e6; color: #9f1239; font-weight: 650; }
+.finding { border: 1px solid var(--border); border-radius: 6px; padding: 0.45rem 0.55rem; margin-bottom: 0.45rem; font-size: 0.8rem; cursor: pointer; background: var(--panel-2); }
+.finding .code { color: #f59e0b; font-weight: 700; font-size: 0.72rem; }
+.meta-line { color: var(--muted); font-size: 0.8rem; }
+.actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+.field { margin-bottom: 0.65rem; }
+.field label { display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 0.2rem; }
+.field input, .field textarea { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.45rem 0.55rem; font: inherit; }
+.hint { color: var(--muted); font-size: 0.8rem; }
+code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.86em; }

@@ -4,7 +4,7 @@ Static browser app for **SpecsIntact-style `.sec` Jobs**: open a folder/ZIP of s
 
 Sibling apps: [Offline UFC Reader](https://github.com/njivy/ufc-offline-viewer), [Offline UFC Editor](https://github.com/njivy/ufc-offline-editor). Different document family — do not mix pack formats.
 
-**Status (2026-09-22 PT):** v0.1.0 — parse/serialize/hash, lineage chips, fixture QC (brackets, unresolved RID, missing SRF), Job ZIP import/export. No CMS. No CRDT.
+**Status (2026-09-22 PT):** v0.2.1 — parse/serialize/hash, lineage chips, fixture QC (brackets, unresolved RID, missing SRF), Job ZIP import/export. Dist loads as static ESM (no bundler required). No CMS. No CRDT.
 
 ## Contract
 
@@ -26,7 +26,7 @@ npm test
 npm run dev
 ```
 
-Vite prints a local URL (usually `http://localhost:5173`).
+Opens at `http://localhost:5173` (static ESM; no bundler required for `dist/`).
 
 1. **Load fixture Job** — three sections; `03 30 00` has leftover brackets, an unresolved `ACI 301` RID, and an `SRF` to `07 26 00` which is not in the Job.
 2. Or import your own ZIP / loose `.sec` files.
@@ -36,7 +36,7 @@ Vite prints a local URL (usually `http://localhost:5173`).
 
 ## Stack
 
-Vite + vanilla JS, JSZip. Tests are Node scripts (no extra runner).
+Vanilla JS (static ESM) + zero-dep `src/zip.js`. Optional Vite config for a bundled path. Tests are Node scripts (no extra runner).
 
 ## Out of scope (v0.1)
 
