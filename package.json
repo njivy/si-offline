@@ -1,0 +1,22 @@
+{
+  "name": "si-offline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "build:fixture": "node scripts/build-fixture-job.mjs",
+    "test:roundtrip": "node scripts/roundtrip-sec.mjs",
+    "test:qc": "node scripts/qc-fixture-check.mjs",
+    "test": "npm run test:roundtrip && npm run test:qc"
+  },
+  "devDependencies": {
+    "vite": "^8.3.0"
+  },
+  "dependencies": {
+    "jszip": "^3.10.2"
+  },
+  "description": "Offline SpecsIntact alternative: .sec editor, lineage, granular change journal, and QC. No CMS."
+}
