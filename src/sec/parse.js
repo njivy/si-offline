@@ -1,7 +1,5 @@
 /**
  * Lightweight SI .sec parser.
- * Produces a tree of { tag, attrs, children } plus extracted header fields.
- * Not a full XML infoset — good enough for UFGS-like fixtures and job files.
  */
 
 const VOIDISH = new Set(['PGE', 'NED', 'EOD', 'END', 'AST']);
@@ -114,7 +112,7 @@ function guessNumberFromSource(source) {
 export function walk(node, fn, parent = null) {
   if (!node || typeof node === 'string') return;
   fn(node, parent);
-  for (const c of node.children || []) walk(c, fn, parent);
+  for (const c of node.children || []) walk(c, fn, node);
 }
 
 export function textContent(node) {
