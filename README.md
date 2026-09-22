@@ -1,2 +1,43 @@
-# si-offline
-Offline SpecsIntact alternative: .sec editor, lineage, change journal, and QC. No CMS.
+# Offline SI
+
+Static browser app for **SpecsIntact-style `.sec` Jobs**: open a folder/ZIP of sections, keep **origin lineage**, record a **granular change journal**, and run QC locally.
+
+Sibling apps: [Offline UFC Reader](https://github.com/njivy/ufc-offline-viewer), [Offline UFC Editor](https://github.com/njivy/ufc-offline-editor). Different document family — do not mix pack formats.
+
+**Status (2026-09-22 PT):** v0.1.0 — parse/serialize/hash, lineage chips, fixture QC (brackets, unresolved RID, missing SRF), Job ZIP import/export. No CMS. No CRDT.
+
+## Contract
+
+See [PACK-CONTRACT.md](./PACK-CONTRACT.md).
+
+- Source of truth is native `.sec` bytes.
+- Optional sidecars (`si-offline-job.json`, `lineage/`, `journal/`) travel with the Job. Official SpecsIntact ignores them.
+- Origin kinds: UFGS Master, prior Job, template, imported file, …
+- This app does not talk to a central repo or CMS.
+
+Offline SI edits and QC reports are working artifacts. Contractual Process & Print remains SpecsIntact until the district says otherwise.
+
+## Run locally
+
+```bash
+npm install
+npm run build:fixture
+npm test
+npm run dev
+```
+
+Vite prints a local URL (usually `http://localhost:5173`).
+
+1. **Load fixture Job** — three sections; `03 30 00` has leftover brackets, an unresolved `ACI 301` RID, and an `SRF` to `07 26 00` which is not in the Job.
+2. Or import your own ZIP / loose `.sec` files.
+3. Select a section to see the origin chip and rendered tags.
+4. Edit raw `.sec` → **Save section + journal** updates hash + journal.
+5. **Export Job ZIP** writes `.sec` plus sidecars.
+
+## Stack
+
+Vite + vanilla JS, JSZip. Tests are Node scripts (no extra runner).
+
+## Out of scope (v0.1)
+
+WYSIWYG wizards, UMRL ingest, Submittal Register publisher, CRDT, live SpecsIntact/WBDG APIs.

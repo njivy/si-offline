@@ -1,0 +1,40 @@
+<SEC>
+<SCN>03 30 00</SCN>
+<STL>CAST-IN-PLACE CONCRETE</STL>
+<DTE>08/26</DTE>
+<PRA>USACE</PRA>
+<PRT>
+<TTL>PART 1 GENERAL</TTL>
+<SPT>
+<TTL>REFERENCES</TTL>
+<REF><RID>ACI 318</RID><RTL>Building Code Requirements for Structural Concrete, 2019</RTL></REF>
+<REF><RID>ASTM C33</RID><RTL>Standard Specification for Concrete Aggregates</RTL></REF>
+</SPT>
+<SPT>
+<TTL>SUBMITTALS</TTL>
+<TXT>Government approval is required for <SUB>SD-03 Product Data</SUB> mix designs.</TXT>
+</SPT>
+<SPT>
+<TTL>DESIGN REQUIREMENTS</TTL>
+<NTE>Specifier: Choose compressive strength and delete unused options.</NTE>
+<TXT>Provide [cast-in-place][precast] concrete with a 28-day compressive strength of [30 MPa][4000 psi].</TXT>
+<TXT>Design shall conform to <RID>ACI 318</RID>.</TXT>
+<TXT>Do not use <RID>ACI 301</RID> unless added to the Reference Article.</TXT>
+<TXT>Coordinate vapor barrier with <SRF>07 26 00</SRF>.</TXT>
+</SPT>
+</PRT>
+<PRT>
+<TTL>PART 2 PRODUCTS</TTL>
+<SPT>
+<TTL>AGGREGATE</TTL>
+<TXT>Fine and coarse aggregate shall conform to <RID>ASTM C33</RID>.</TXT>
+</SPT>
+</PRT>
+<PRT>
+<TTL>PART 3 EXECUTION</TTL>
+<SPT>
+<TTL>PLACING</TTL>
+<TXT>Place concrete continuously between construction joints.</TXT>
+</SPT>
+</PRT>
+</SEC>

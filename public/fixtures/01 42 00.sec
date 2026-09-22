@@ -1,0 +1,25 @@
+<SEC>
+<SCN>01 42 00</SCN>
+<STL>SOURCES FOR REFERENCE PUBLICATIONS</STL>
+<DTE>08/26</DTE>
+<PRA>USACE</PRA>
+<PRT>
+<TTL>PART 1 GENERAL</TTL>
+<SPT>
+<TTL>REFERENCES</TTL>
+<REF><RID>UFC 1-300-02</RID><RTL>Unified Facilities Guide Specifications (UFGS) Format Standard</RTL></REF>
+</SPT>
+<SPT>
+<TTL>ORDERING INFORMATION</TTL>
+<TXT>Obtain referenced publications from the originating organization listed in this Section.</TXT>
+</SPT>
+</PRT>
+<PRT>
+<TTL>PART 2 PRODUCTS</TTL>
+<TXT>Not used.</TXT>
+</PRT>
+<PRT>
+<TTL>PART 3 EXECUTION</TTL>
+<TXT>Not used.</TXT>
+</PRT>
+</SEC>
