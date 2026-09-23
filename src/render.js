@@ -8,22 +8,40 @@ export function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
-function renderChildren(children, opts) {
+/** Tags whose rendered host is contenteditable in inline WYSIWYG mode. */
+const EDITABLE_TAGS = new Set(['TXT', 'TTL', 'STL', 'NTE', 'NPR', 'RTL', 'ITM', 'OLI']);
+
+function childrenFrom(children, opts) {
   return (children || []).map((c) => renderNode(c, opts)).join('');
+}
+
+function editableAttrs(node, opts) {
+  if (!opts.editable || !node || !node._nid) return '';
+  if (!EDITABLE_TAGS.has(node.tag)) return '';
+  return ` data-nid="${escapeHtml(node._nid)}" contenteditable="true" spellcheck="true"`;
+}
+
+function dataTagAttrs(node, opts) {
+  if (!opts.editable || !node || !node._nid) return '';
+  // Nested SI tags inside an editable host must round-trip via data-tag.
+  return ` data-nid="${escapeHtml(node._nid)}" data-tag="${escapeHtml(node.tag)}"`;
 }
 
 export function renderNode(node, opts = {}) {
   if (typeof node === 'string') return decorateText(node, opts);
   if (!node || !node.tag) return '';
   const tag = node.tag;
-  const inner = renderChildren(node.children, opts);
+  const inner = childrenFrom(node.children, opts);
+  const ce = editableAttrs(node, opts);
+  const dt = dataTagAttrs(node, opts);
+
   switch (tag) {
     case 'SEC':
-      return `<article class="sec-doc">${inner}</article>`;
+      return `<article class="sec-doc" data-wysiwyg="1"${opts.editable ? ' data-mode="edit"' : ''}>${inner}</article>`;
     case 'SCN':
       return '';
     case 'STL':
-      return `<h1 class="sec-title">${inner}</h1>`;
+      return `<h1 class="sec-title"${ce}>${inner}</h1>`;
     case 'DTE':
     case 'PRA':
     case 'MTA':
@@ -37,44 +55,48 @@ export function renderNode(node, opts = {}) {
     case 'SPT':
       return `<section class="spt">${inner}</section>`;
     case 'TTL':
-      return `<h2 class="ttl">${inner}</h2>`;
+      return `<h2 class="ttl"${ce}>${inner}</h2>`;
     case 'TXT':
-      return `<p class="txt">${inner}</p>`;
+      return `<p class="txt"${ce}>${inner}</p>`;
     case 'NTE':
     case 'NPR':
-      return opts.showNotes === false ? '' : `<aside class="note ${tag.toLowerCase()}">${inner}</aside>`;
+      return opts.showNotes === false
+        ? ''
+        : `<aside class="note ${tag.toLowerCase()}"${ce}>${inner}</aside>`;
     case 'RID':
-      return `<span class="tag rid" title="RID">${inner}</span>`;
+      return `<span class="tag rid" title="RID"${dt}>${inner}</span>`;
     case 'RTL':
-      return `<span class="tag rtl">${inner}</span>`;
+      return `<span class="tag rtl"${ce}${dt}>${inner}</span>`;
     case 'REF':
       return `<div class="ref">${inner}</div>`;
     case 'SUB':
-      return `<span class="tag sub" title="SUB">${inner}</span>`;
+      return `<span class="tag sub" title="SUB"${dt}>${inner}</span>`;
     case 'SRF':
-      return `<span class="tag srf" title="SRF">${inner}</span>`;
+      return `<span class="tag srf" title="SRF"${dt}>${inner}</span>`;
     case 'TAI':
-      return opts.showTailoring === false ? inner : `<span class="tag tai">${inner}</span>`;
+      return opts.showTailoring === false
+        ? inner
+        : `<span class="tag tai"${dt}>${inner}</span>`;
     case 'ENG':
-      return opts.showEng === false ? '' : `<span class="unit eng">${inner}</span>`;
+      return opts.showEng === false ? '' : `<span class="unit eng"${dt}>${inner}</span>`;
     case 'MET':
-      return opts.showMet === false ? '' : `<span class="unit met">${inner}</span>`;
+      return opts.showMet === false ? '' : `<span class="unit met"${dt}>${inner}</span>`;
     case 'ADD':
-      return `<ins class="rev add">${inner}</ins>`;
+      return `<ins class="rev add"${dt}>${inner}</ins>`;
     case 'DEL':
-      return `<del class="rev del">${inner}</del>`;
+      return `<del class="rev del"${dt}>${inner}</del>`;
     case 'LST':
     case 'OLG':
       return `<ul class="lst">${inner}</ul>`;
     case 'ITM':
     case 'OLI':
-      return `<li>${inner}</li>`;
+      return `<li${ce}>${inner}</li>`;
     case 'TAB':
     case 'TBL':
       return `<div class="table-like">${inner}</div>`;
     default:
       return opts.showTags
-        ? `<span class="unknown-tag" data-tag="${escapeHtml(tag)}">${inner}</span>`
+        ? `<span class="unknown-tag" data-tag="${escapeHtml(tag)}"${dt}>${inner}</span>`
         : inner;
   }
 }
@@ -83,7 +105,10 @@ function decorateText(text, opts) {
   const showBrackets = opts.showBrackets !== false;
   const esc = escapeHtml(text);
   if (!showBrackets) return esc;
-  return esc.replace(/\[([^\[\]]{0,400})\]/g, '<span class="bracket">[$1]</span>');
+  return esc.replace(
+    /\[([^\[\]]{0,400})\]/g,
+    '<span class="bracket" data-bracket="1">[$1]</span>'
+  );
 }
 
 export function renderSectionHtml(sec, opts = {}) {

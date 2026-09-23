@@ -1,12 +1,19 @@
+import './style.css';
 import { loadJobFromZipBuffer, loadJobFromSecFiles, buildJobZip } from './pack.js';
-import { renderSectionHtml, escapeHtml } from './render.js';
+import { escapeHtml } from './render.js';
 import { runQc, summarizeFindings } from './qc/index.js';
 import { originLabel, updateCurrentHash } from './lineage.js';
-import { serializeSec } from './sec/serialize.js';
 import { hashSecText } from './sec/hash.js';
 import { parseSec } from './sec/parse.js';
 import sampleJobUrl from './fixtures/job-minimal.js';
 import { appendOp, textEditOp } from './journal.js';
+import {
+  renderEditableHtml,
+  toolbarHtml,
+  applyEditableDom,
+  serializeFromTree,
+  bindWysiwyg,
+} from './wysiwyg.js';
 
 const SAMPLE = sampleJobUrl;
 const app = document.querySelector('#app');
@@ -21,7 +28,10 @@ let state = {
   authorName: localStorage.getItem('si-offline-author') || '',
   rationale: '',
   showNotes: true,
+  showRaw: false,
 };
+
+let unbindWy = null;
 
 function setStatus(msg, isError = false) {
   state.status = msg || '';
@@ -98,6 +108,8 @@ async function loadSample() {
 async function exportJob() {
   if (!state.job) return;
   try {
+    // Flush any in-progress inline edits on the selected section first.
+    await flushInlineToSection(false);
     state.job.qc = state.findings;
     const blob = await buildJobZip(state.job);
     const name = `${(state.job.job.name || 'job').replace(/\s+/g, '-')}.zip`;
@@ -114,13 +126,79 @@ async function exportJob() {
   }
 }
 
-async function saveTextEdit() {
+/**
+ * Pull contenteditable DOM into sec.parsed / sec.text without journal (or with).
+ * @param {boolean} journal  if true, append journal entry when bytes change
+ */
+async function flushInlineToSection(journal = true) {
+  const sec = selectedSection();
+  if (!sec) return false;
+  const root = document.getElementById('wysiwyg-root');
+  if (!root) return false;
+
+  state.authorName = document.getElementById('author-name')?.value ?? state.authorName;
+  state.rationale = document.getElementById('edit-rationale')?.value ?? state.rationale;
+  localStorage.setItem('si-offline-author', state.authorName || '');
+
+  applyEditableDom(root, sec.parsed);
+  // Keep section title in sync with STL if present.
+  const stl = (sec.parsed.children || []).find((c) => c && c.tag === 'STL');
+  if (stl) {
+    const t = (stl.children || []).map((c) => (typeof c === 'string' ? c : '')).join('');
+    if (t) sec.title = t;
+  }
+  sec.parsed.number = sec.parsed.number || sec.number;
+  sec.parsed.title = sec.title;
+
+  const next = serializeFromTree(sec.parsed);
+  const beforeHash = sec.hash;
+  const afterHash = await hashSecText(next);
+  if (beforeHash === afterHash) {
+    if (journal) setStatus('No byte change.');
+    return false;
+  }
+
+  sec.text = next;
+  sec.hash = afterHash;
+  sec.parsed = parseSec(next);
+  sec.parsed.number = sec.parsed.number || sec.number;
+  sec.title = sec.parsed.title || sec.title;
+  sec.lineage = updateCurrentHash(sec.lineage, afterHash);
+
+  if (journal) {
+    const author = { displayName: state.authorName || 'unspecified', id: null };
+    sec.journal = appendOp(
+      sec.journal,
+      textEditOp({
+        author,
+        beforeHash,
+        afterHash,
+        beforeSnippet: '',
+        afterSnippet: '',
+        rationale: (state.rationale || '').trim() || null,
+      })
+    );
+  }
+
+  runJobQc();
+  if (journal) state.status = `Saved ${sec.number} · ${afterHash.slice(0, 18)}…`;
+  return true;
+}
+
+async function saveInlineEdit() {
+  const changed = await flushInlineToSection(true);
+  if (changed) render();
+}
+
+async function saveRawFallback() {
   const sec = selectedSection();
   if (!sec) return;
   const ta = document.getElementById('raw-sec');
   if (!ta) return;
   const next = ta.value;
   const rationale = (document.getElementById('edit-rationale')?.value || '').trim();
+  state.authorName = document.getElementById('author-name')?.value ?? state.authorName;
+  localStorage.setItem('si-offline-author', state.authorName || '');
   const beforeHash = sec.hash;
   const afterHash = await hashSecText(next);
   if (beforeHash === afterHash) {
@@ -146,7 +224,21 @@ async function saveTextEdit() {
     })
   );
   runJobQc();
-  state.status = `Saved ${sec.number} · ${afterHash.slice(0, 18)}…`;
+  state.status = `Saved ${sec.number} (raw) · ${afterHash.slice(0, 18)}…`;
+  render();
+}
+
+function onTreeMutated(secTree) {
+  const sec = selectedSection();
+  if (!sec) return;
+  sec.parsed = secTree;
+  // Soft-update working .sec bytes so QC/export see the pick; journal on Save.
+  try {
+    sec.text = serializeFromTree(secTree);
+  } catch {
+    /* keep prior text */
+  }
+  runJobQc();
   render();
 }
 
@@ -157,12 +249,12 @@ function renderHome() {
     </div>
     <header class="topbar">
       <h1>Offline SI</h1>
-      <span class="meta">v0.2.2 · lineage + QC</span>
+      <span class="meta">v0.3.0 · inline WYSIWYG</span>
     </header>
     <main class="main">
       <div class="card">
         <h3>Open a Job of .sec files</h3>
-        <p class="hint">Import a ZIP of sections or loose <code>.sec</code> files.</p>
+        <p class="hint">Import a ZIP of sections or loose <code>.sec</code> files. Edit inline in the section body (click-and-type).</p>
         <div class="home-actions">
           <label class="btn primary file-btn">Import Job ZIP<input type="file" id="file-zip" accept=".zip,application/zip" /></label>
           <label class="btn file-btn">Import .sec files<input type="file" id="file-sec" accept=".sec,.xml,text/xml" multiple /></label>
@@ -179,28 +271,37 @@ function renderJob() {
   const job = state.job;
   const sec = selectedSection();
   const q = summarizeFindings(state.findings);
-  const rows = job.sections.map((s) => {
-    const kind = s.lineage?.origin?.kind || 'imported-sec';
-    const active = s.number === state.selected ? 'active' : '';
-    const nFind = state.findings.filter((f) => f.section === s.number).length;
-    return `<li><div class="toc-row ${active}" data-sec="${escapeHtml(s.number)}">
+  const rows = job.sections
+    .map((s) => {
+      const kind = s.lineage?.origin?.kind || 'imported-sec';
+      const active = s.number === state.selected ? 'active' : '';
+      const nFind = state.findings.filter((f) => f.section === s.number).length;
+      return `<li><div class="toc-row ${active}" data-sec="${escapeHtml(s.number)}">
       <span class="toc-num">${escapeHtml(s.number)}</span>
       <span class="toc-title">${escapeHtml(s.title || '')}</span>
       <span class="chip ${chipClass(kind)}">${escapeHtml(originLabel(s.lineage?.origin))}</span>
       ${nFind ? `<span class="hint">${nFind} finding(s)</span>` : ''}
     </div></li>`;
-  }).join('');
-  const findings = state.findings.map((f) => `<div class="finding ${escapeHtml(f.severity)}" data-jump="${escapeHtml(f.section)}">
+    })
+    .join('');
+  const findings = state.findings
+    .map(
+      (f) => `<div class="finding ${escapeHtml(f.severity)}" data-jump="${escapeHtml(f.section)}">
     <div class="code">${escapeHtml(f.code)}</div>
     <p><strong>${escapeHtml(f.section)}</strong> — ${escapeHtml(f.message)}</p>
-  </div>`).join('');
+  </div>`
+    )
+    .join('');
   const origin = sec?.lineage?.origin;
-  const paper = sec ? renderSectionHtml(sec.parsed, { showNotes: state.showNotes, showTags: true }) : '<p class="hint">Select a section.</p>';
+  const paper = sec
+    ? renderEditableHtml(sec.parsed)
+    : '<p class="hint">Select a section.</p>';
+
   return `
-    <div class="proposal-banner">Offline SI — working files only. Process &amp; Print remains official SpecsIntact.</div>
+    <div class="proposal-banner">Offline SI — working files only. Process &amp; Print remains official SpecsIntact. Click in the body to edit.</div>
     <header class="topbar">
       <h1>Offline SI</h1>
-      <span class="meta">${escapeHtml(job.job.name || '')} · ${job.sections.length} sections · ${q.errors} QC errors</span>
+      <span class="meta">${escapeHtml(job.job.name || '')} · ${job.sections.length} sections · ${q.errors} QC errors · v0.3.0</span>
       <button type="button" id="btn-home">Close Job</button>
       <button type="button" class="primary" id="btn-export">Export Job ZIP</button>
     </header>
@@ -211,18 +312,23 @@ function renderJob() {
         ${state.status && !state.error ? `<p class="status">${escapeHtml(state.status)}</p>` : ''}
         ${
           sec
-            ? `<div class="card">
+            ? `<div class="card section-card">
           <h3>${escapeHtml(sec.number)} ${escapeHtml(sec.title || '')}</h3>
           <p class="meta-line">Origin: <span class="chip ${chipClass(origin?.kind)}">${escapeHtml(originLabel(origin))}</span> · hash <code>${escapeHtml(sec.hash)}</code></p>
           <p class="meta-line">Journal entries: ${sec.journal?.entries?.length || 0}</p>
-          <div class="paper">${paper}</div>
-        </div>
-        <div class="card">
-          <h3>Raw .sec (tracked save)</h3>
-          <div class="field"><label for="author-name">Author display name</label><input id="author-name" value="${escapeHtml(state.authorName)}" /></div>
-          <div class="field"><label for="edit-rationale">Rationale</label><textarea id="edit-rationale">${escapeHtml(state.rationale)}</textarea></div>
-          <div class="field"><label for="raw-sec">Section source</label><textarea id="raw-sec" style="min-height:14rem;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.78rem">${escapeHtml(sec.text)}</textarea></div>
-          <div class="actions"><button type="button" class="primary" id="btn-save">Save section + journal</button></div>
+          <div class="edit-meta">
+            <div class="field inline"><label for="author-name">Author</label><input id="author-name" value="${escapeHtml(state.authorName)}" placeholder="display name" /></div>
+            <div class="field inline grow"><label for="edit-rationale">Rationale</label><input id="edit-rationale" value="${escapeHtml(state.rationale)}" placeholder="optional save note" /></div>
+            <button type="button" class="primary" id="btn-save">Save section + journal</button>
+          </div>
+          ${toolbarHtml()}
+          <div class="paper wysiwyg-surface" data-mode="edit" id="wysiwyg-root">${paper}</div>
+          <details class="raw-fallback" ${state.showRaw ? 'open' : ''}>
+            <summary>Advanced: raw .sec source</summary>
+            <p class="hint">Primary editing is inline above. Raw source is a fallback for tags that are not contenteditable hosts (structure, SCN, REF shells, tables).</p>
+            <div class="field"><label for="raw-sec">Section source</label><textarea id="raw-sec" class="raw-sec">${escapeHtml(sec.text)}</textarea></div>
+            <div class="actions"><button type="button" id="btn-save-raw">Save raw + journal</button></div>
+          </details>
         </div>`
             : ''
         }
@@ -232,6 +338,10 @@ function renderJob() {
 }
 
 function render() {
+  if (typeof unbindWy === 'function') {
+    unbindWy();
+    unbindWy = null;
+  }
   app.innerHTML = state.view === 'job' && state.job ? renderJob() : renderHome();
   bind();
 }
@@ -253,7 +363,8 @@ function bind() {
     render();
   });
   document.getElementById('btn-export')?.addEventListener('click', exportJob);
-  document.getElementById('btn-save')?.addEventListener('click', saveTextEdit);
+  document.getElementById('btn-save')?.addEventListener('click', saveInlineEdit);
+  document.getElementById('btn-save-raw')?.addEventListener('click', saveRawFallback);
   document.getElementById('author-name')?.addEventListener('change', (e) => {
     state.authorName = e.target.value;
     localStorage.setItem('si-offline-author', state.authorName);
@@ -261,19 +372,32 @@ function bind() {
   document.getElementById('edit-rationale')?.addEventListener('input', (e) => {
     state.rationale = e.target.value;
   });
+  document.querySelector('details.raw-fallback')?.addEventListener('toggle', (e) => {
+    state.showRaw = e.target.open;
+  });
   document.querySelectorAll('.toc-row[data-sec]').forEach((el) => {
-    el.addEventListener('click', () => {
+    el.addEventListener('click', async () => {
+      await flushInlineToSection(false);
       state.selected = el.getAttribute('data-sec');
       render();
     });
   });
   document.querySelectorAll('.finding[data-jump]').forEach((el) => {
-    el.addEventListener('click', () => {
+    el.addEventListener('click', async () => {
+      await flushInlineToSection(false);
       state.selected = el.getAttribute('data-jump');
       render();
     });
   });
+
+  const root = document.getElementById('wysiwyg-root');
+  const toolbar = document.getElementById('wysiwyg-toolbar');
+  if (root && toolbar) {
+    unbindWy = bindWysiwyg(toolbar, root, {
+      getSec: () => selectedSection()?.parsed || null,
+      onTreeMutated,
+    });
+  }
 }
 
 render();
-void serializeSec;
