@@ -47,9 +47,9 @@ export function toolbarHtml() {
     <button type="button" data-cmd="wrap-rid" title="Wrap selection as RID">RID</button>
     <button type="button" data-cmd="wrap-sub" title="Wrap selection as SUB">SUB</button>
     <button type="button" data-cmd="wrap-srf" title="Wrap selection as SRF">SRF</button>
-    <span class="hint">Pick options = SpecsIntact brackets · click a pink group · type in the body</span>
+    <span class="hint">Pick options floats on the pink brackets · click a group or place caret</span>
   </div>
-  <div id="bracket-picker" class="bracket-picker" hidden></div>`;
+  <div id="bracket-picker" class="bracket-picker bp-popover" hidden role="dialog" aria-label="Pick options"></div>`;
 }
 
 function unwrapFormatting(el) {
@@ -270,6 +270,95 @@ function findGroupAtCaret(rootEl) {
   return { ...group, signature: groupSignature(group.options), nid: ctx.nid, hostText: ctx.text };
 }
 
+
+/**
+ * Clear transient anchor highlight on bracket spans.
+ */
+function clearBpAnchors(rootEl) {
+  rootEl?.querySelectorAll?.('.bracket.bp-anchor')?.forEach((el) => el.classList.remove('bp-anchor'));
+}
+
+/**
+ * Prefer a visible .bracket span for the group; fall back to editable host.
+ */
+function resolvePickerAnchor(rootEl, groupInfo, preferredEl = null) {
+  if (preferredEl && rootEl?.contains(preferredEl)) return preferredEl;
+  if (!rootEl || !groupInfo) return null;
+  const sig = groupInfo.signature;
+  const brackets = [...rootEl.querySelectorAll('.bracket[data-bracket], span.bracket')];
+  if (sig) {
+    const hit = brackets.find((b) => {
+      try {
+        const opts = JSON.parse(b.getAttribute('data-bsig') || 'null');
+        return opts && groupSignature(opts) === sig;
+      } catch {
+        return false;
+      }
+    });
+    if (hit) return hit;
+  }
+  if (groupInfo.nid) {
+    const host = rootEl.querySelector(`[data-nid="${CSS.escape(groupInfo.nid)}"]`);
+    if (host) return host;
+  }
+  return rootEl.querySelector('.bracket') || rootEl;
+}
+
+/**
+ * Place the picker as a fixed popover next to the anchor (flip if needed).
+ * Scrolls the anchor into view first for visual proximity.
+ */
+export function positionPickerPopover(panel, anchorEl, { preferBelow = true } = {}) {
+  if (!panel || !anchorEl) return;
+  panel.classList.add('bp-popover');
+  panel.hidden = false;
+  try {
+    anchorEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  } catch {
+    try { anchorEl.scrollIntoView(true); } catch { /* ignore */ }
+  }
+  const place = () => {
+    const r = anchorEl.getBoundingClientRect();
+    // Measure after visible
+    const pw = Math.min(panel.offsetWidth || 320, window.innerWidth - 16);
+    const ph = panel.offsetHeight || 200;
+    let top = preferBelow ? r.bottom + 10 : r.top - ph - 10;
+    if (preferBelow && top + ph > window.innerHeight - 8) {
+      top = Math.max(8, r.top - ph - 10);
+    } else if (!preferBelow && top < 8) {
+      top = Math.min(window.innerHeight - ph - 8, r.bottom + 10);
+    }
+    let left = r.left;
+    if (left + pw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - pw - 8);
+    if (left < 8) left = 8;
+    panel.style.top = `${Math.round(top)}px`;
+    panel.style.left = `${Math.round(left)}px`;
+    panel.style.width = '';
+    // Caret arrow toward anchor
+    let caret = panel.querySelector('.bp-caret');
+    if (!caret) {
+      caret = panel.ownerDocument.createElement('div');
+      caret.className = 'bp-caret';
+      caret.setAttribute('aria-hidden', 'true');
+      panel.prepend(caret);
+    }
+    const below = top >= r.bottom - 1;
+    const caretLeft = Math.min(Math.max(12, r.left + r.width / 2 - left - 6), pw - 18);
+    caret.style.left = `${Math.round(caretLeft)}px`;
+    if (below) {
+      caret.style.top = '-6px';
+      caret.style.bottom = 'auto';
+      caret.style.transform = 'rotate(45deg)';
+    } else {
+      caret.style.top = 'auto';
+      caret.style.bottom = '-6px';
+      caret.style.transform = 'rotate(225deg)';
+    }
+  };
+  place();
+  requestAnimationFrame(place);
+}
+
 /**
  * Render the guided picker panel.
  * @param {HTMLElement} panel
@@ -280,6 +369,8 @@ export function renderPickerPanel(panel, model) {
   if (!model || !model.group) {
     panel.hidden = true;
     panel.innerHTML = '';
+    panel.style.top = '';
+    panel.style.left = '';
     return;
   }
   const g = model.group;
@@ -330,7 +421,9 @@ export function renderPickerPanel(panel, model) {
         : '';
 
   panel.hidden = false;
+  panel.classList.add('bp-popover');
   panel.innerHTML = `
+    <div class="bp-caret" aria-hidden="true"></div>
     <div class="bp-head">
       <strong>Pick options</strong>
       <span class="hint">${escapeHtml(g.kind)} · ${g.options.length} token(s)</span>
@@ -344,6 +437,13 @@ export function renderPickerPanel(panel, model) {
     </div>
     ${model.error ? `<p class="status error">${escapeHtml(model.error)}</p>` : ''}
   `;
+  if (model.anchorEl) {
+    clearBpAnchors(model.rootEl);
+    if (model.anchorEl.classList?.contains('bracket')) {
+      model.anchorEl.classList.add('bp-anchor');
+    }
+    positionPickerPopover(panel, model.anchorEl);
+  }
 }
 
 /**
@@ -365,24 +465,37 @@ export function bindWysiwyg(toolbarEl, rootEl, hooks = {}) {
   let pickerModel = null;
 
   const closePicker = () => {
+    clearBpAnchors(rootEl);
     pickerModel = null;
+    if (panel) {
+      panel.style.top = '';
+      panel.style.left = '';
+    }
     renderPickerPanel(panel, null);
   };
 
-  const openPicker = (groupInfo, preferredOptIndex = 0) => {
+  const openPicker = (groupInfo, preferredOptIndex = 0, preferredEl = null) => {
     if (!groupInfo) {
       if (panel) {
+        const fallback =
+          preferredEl ||
+          toolbarEl.querySelector('[data-cmd="pick-options"]') ||
+          toolbarEl;
         panel.hidden = false;
-        panel.innerHTML = `<div class="bp-head"><strong>Pick options</strong>
+        panel.classList.add('bp-popover');
+        panel.innerHTML = `<div class="bp-caret" aria-hidden="true"></div>
+          <div class="bp-head"><strong>Pick options</strong>
           <button type="button" class="bp-close" data-bp="close">×</button></div>
           <p class="status error">No SpecsIntact bracket group at the caret. Click a pink bracket, or place the caret inside one.</p>
           <div class="bp-actions"><button type="button" data-bp="cancel">Close</button></div>`;
+        positionPickerPopover(panel, fallback);
       }
       return;
     }
     const job = hooks.getJob?.();
     const sections = job?.sections || [];
     const jobCount = countSignatureInJob(sections, groupInfo.signature);
+    const anchorEl = resolvePickerAnchor(rootEl, groupInfo, preferredEl);
     pickerModel = {
       group: groupInfo,
       selectedIndex: preferredOptIndex,
@@ -390,6 +503,8 @@ export function bindWysiwyg(toolbarEl, rootEl, hooks = {}) {
       fillValue: groupInfo.kind === 'fill' ? '' : '',
       jobCount,
       error: '',
+      anchorEl,
+      rootEl,
     };
     renderPickerPanel(panel, pickerModel);
   };
@@ -414,7 +529,7 @@ export function bindWysiwyg(toolbarEl, rootEl, hooks = {}) {
       // Flush DOM → tree so host text matches what the user sees.
       if (sec) applyEditableDom(rootEl, sec);
       const info = findGroupAtCaret(rootEl);
-      openPicker(info);
+      openPicker(info, 0, null);
       return;
     }
 
@@ -440,7 +555,7 @@ export function bindWysiwyg(toolbarEl, rootEl, hooks = {}) {
     applyEditableDom(rootEl, sec);
     const optIdx = Number(br.getAttribute('data-bopt') || '0') || 0;
     const info = findGroupFromBracketEl(rootEl, br);
-    openPicker(info, optIdx);
+    openPicker(info, optIdx, br);
   };
 
   const onPanelClick = async (ev) => {
@@ -510,14 +625,26 @@ export function bindWysiwyg(toolbarEl, rootEl, hooks = {}) {
     await hooks.onBracketApply?.(decision);
   };
 
+  const onReposition = () => {
+    if (pickerModel?.anchorEl && panel && !panel.hidden) {
+      positionPickerPopover(panel, pickerModel.anchorEl);
+    }
+  };
+
   toolbarEl.addEventListener('click', onToolbar);
   rootEl.addEventListener('click', onRootClick);
   panel?.addEventListener('click', onPanelClick);
+  window.addEventListener('resize', onReposition);
+  // Reposition while scrolling the main paper column
+  const scrollParent = rootEl.closest('.main') || rootEl.ownerDocument;
+  scrollParent.addEventListener?.('scroll', onReposition, { passive: true });
 
   return () => {
     toolbarEl.removeEventListener('click', onToolbar);
     rootEl.removeEventListener('click', onRootClick);
     panel?.removeEventListener('click', onPanelClick);
+    window.removeEventListener('resize', onReposition);
+    scrollParent.removeEventListener?.('scroll', onReposition);
     closePicker();
   };
 }

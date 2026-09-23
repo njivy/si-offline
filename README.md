@@ -4,7 +4,7 @@ Static browser app for **SpecsIntact-style `.sec` Jobs**: open a folder/ZIP of s
 
 Sibling apps: [Offline UFC Reader](https://github.com/njivy/ufc-offline-viewer), [Offline UFC Editor](https://github.com/njivy/ufc-offline-editor). Different document family — do not mix pack formats.
 
-**Status (2026-09-23 PT):** v0.4.0 — guided SpecsIntact bracket / option picker with Job-wide batch apply (preview count), inline WYSIWYG, lineage + journal + QC, Job ZIP import/export. Dist is a Vite IIFE (`assets/app.js` + classic `defer` script) so unzip + double-click `index.html` works (`file://`). No CMS. No CRDT.
+**Status (2026-09-23 PT):** v0.4.1 — Pick options + QC sit next to the content (anchored popover / jump-highlight). Guided SpecsIntact bracket picker with Job-wide batch, inline WYSIWYG, lineage + journal + QC, Job ZIP import/export. Dist is a Vite IIFE (`assets/app.js` + classic `defer` script) so unzip + double-click `index.html` works (`file://`). No CMS. No CRDT.
 
 ## Contract
 

@@ -19,13 +19,15 @@ import {
 
 const SAMPLE = sampleJobUrl;
 const app = document.querySelector('#app');
-const APP_VERSION = '0.4.0';
+const APP_VERSION = '0.4.1';
 
 let state = {
   view: 'home',
   job: null,
   selected: null,
   findings: [],
+  /** @type {null | object} finding currently jumped-to / highlighted in the body */
+  qcFocus: null,
   status: '',
   error: '',
   authorName: localStorage.getItem('si-offline-author') || '',
@@ -52,6 +54,154 @@ function selectedSection() {
   if (!state.job || !state.selected) return null;
   return state.job.sections.find((s) => s.number === state.selected) || null;
 }
+
+
+/**
+ * Locate the DOM node for a QC finding inside the WYSIWYG paper.
+ * Prefer tag/snippet locators already produced by fail-closed QC rules.
+ */
+function findQcTarget(rootEl, finding) {
+  if (!rootEl || !finding) return null;
+  const loc = finding.locator || {};
+  const snippet = String(loc.snippet || '').trim();
+  const rid = String(loc.rid || '').trim();
+  const cited = String(loc.cited || '').trim();
+  const tag = String(loc.tag || '').toUpperCase();
+
+  if (tag === 'RID' && rid) {
+    const hit = [...rootEl.querySelectorAll('.tag.rid, [data-tag="RID"]')].find(
+      (el) => (el.textContent || '').replace(/\s+/g, ' ').trim() === rid
+    );
+    if (hit) return hit;
+  }
+  if (tag === 'SRF' && cited) {
+    const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().replace(/^SECTION\s+/i, '');
+    const want = norm(cited);
+    const hit = [...rootEl.querySelectorAll('.tag.srf, [data-tag="SRF"]')].find((el) => {
+      const t = norm(el.textContent);
+      return t === want || t.includes(want) || want.includes(t);
+    });
+    if (hit) return hit;
+  }
+  if (snippet) {
+    const brackets = [...rootEl.querySelectorAll('.bracket[data-bracket], span.bracket')];
+    const exact = brackets.find((b) => (b.textContent || '') === snippet);
+    if (exact) return exact;
+    const soft = brackets.find((b) => (b.textContent || '').includes(snippet.replace(/^\[|\]$/g, '').slice(0, 40)));
+    if (soft) return soft;
+  }
+  // Fallback: first text match in paper
+  const needle = snippet || rid || cited || '';
+  if (needle) {
+    const walker = rootEl.ownerDocument.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if ((node.textContent || '').includes(needle.slice(0, 48))) {
+        return node.parentElement || rootEl;
+      }
+    }
+  }
+  return null;
+}
+
+function clearQcHits(rootEl) {
+  rootEl?.querySelectorAll?.('.qc-hit')?.forEach((el) => el.classList.remove('qc-hit'));
+}
+
+/**
+ * Mark every finding that belongs to the open section with an inline badge.
+ */
+function decorateQcMarks(rootEl, findings, sectionNumber) {
+  if (!rootEl) return;
+  rootEl.querySelectorAll('.qc-mark').forEach((el) => {
+    el.classList.remove('qc-mark');
+    el.removeAttribute('data-qc-id');
+    el.removeAttribute('data-qc-badge');
+  });
+  const mine = (findings || []).filter((f) => f.section === sectionNumber);
+  for (const f of mine) {
+    const el = findQcTarget(rootEl, f);
+    if (!el) continue;
+    el.classList.add('qc-mark');
+    el.setAttribute('data-qc-id', f.findingId || f.code || '');
+    el.setAttribute('data-qc-badge', (f.code || 'QC').split('.').pop().slice(0, 8));
+  }
+}
+
+/**
+ * Position a small anchored detail card next to the offending span.
+ */
+function positionQcAnchor(panel, anchorEl) {
+  if (!panel || !anchorEl) return;
+  panel.hidden = false;
+  try {
+    anchorEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  } catch {
+    try { anchorEl.scrollIntoView(true); } catch { /* ignore */ }
+  }
+  const place = () => {
+    const r = anchorEl.getBoundingClientRect();
+    const pw = Math.min(panel.offsetWidth || 300, window.innerWidth - 16);
+    const ph = panel.offsetHeight || 120;
+    let top = r.bottom + 10;
+    if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 10);
+    let left = r.left;
+    if (left + pw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - pw - 8);
+    if (left < 8) left = 8;
+    panel.style.top = `${Math.round(top)}px`;
+    panel.style.left = `${Math.round(left)}px`;
+  };
+  place();
+  requestAnimationFrame(place);
+}
+
+function renderQcAnchor(panel, finding) {
+  if (!panel) return;
+  if (!finding) {
+    panel.hidden = true;
+    panel.innerHTML = '';
+    return;
+  }
+  const snip = finding.locator?.snippet || finding.locator?.rid || finding.locator?.cited || '';
+  panel.innerHTML = `
+    <div class="qa-head">
+      <span class="qa-code">${escapeHtml(finding.code || '')}</span>
+      <span class="hint">${escapeHtml(finding.severity || '')}</span>
+      <button type="button" class="qa-close" data-qa="close" title="Close">×</button>
+    </div>
+    <p><strong>${escapeHtml(finding.section || '')}</strong> — ${escapeHtml(finding.message || '')}</p>
+    ${snip ? `<p class="hint"><code>${escapeHtml(String(snip).slice(0, 80))}</code></p>` : ''}
+    ${finding.fixHint ? `<p class="hint">${escapeHtml(finding.fixHint)}</p>` : ''}
+  `;
+}
+
+/**
+ * Scroll + highlight the offending span and show anchored QC detail.
+ */
+function applyQcFocus(rootEl, finding) {
+  const panel = document.getElementById('qc-anchor');
+  clearQcHits(rootEl);
+  if (!finding || !rootEl) {
+    renderQcAnchor(panel, null);
+    return null;
+  }
+  const target = findQcTarget(rootEl, finding);
+  if (!target) {
+    renderQcAnchor(panel, finding);
+    if (panel) {
+      // Still show detail near paper top-left if we can't resolve a span
+      panel.style.top = '120px';
+      panel.style.left = '340px';
+      panel.hidden = false;
+    }
+    return null;
+  }
+  target.classList.add('qc-hit');
+  renderQcAnchor(panel, finding);
+  positionQcAnchor(panel, target);
+  return target;
+}
+
 
 function runJobQc() {
   if (!state.job) return;
@@ -366,12 +516,15 @@ function renderJob() {
     })
     .join('');
   const findings = state.findings
-    .map(
-      (f) => `<div class="finding ${escapeHtml(f.severity)}" data-jump="${escapeHtml(f.section)}">
+    .map((f) => {
+      const snip = f.locator?.snippet || f.locator?.rid || f.locator?.cited || '';
+      const active = state.qcFocus && state.qcFocus.findingId === f.findingId ? 'active' : '';
+      return `<div class="finding ${escapeHtml(f.severity)} ${active}" data-jump="${escapeHtml(f.section)}" data-fid="${escapeHtml(f.findingId || '')}">
     <div class="code">${escapeHtml(f.code)}</div>
     <p><strong>${escapeHtml(f.section)}</strong> — ${escapeHtml(f.message)}</p>
-  </div>`
-    )
+    ${snip ? `<span class="snippet">${escapeHtml(String(snip).slice(0, 80))}</span>` : ''}
+  </div>`;
+    })
     .join('');
   const origin = sec?.lineage?.origin;
   const paper = sec
@@ -414,8 +567,12 @@ function renderJob() {
             : ''
         }
       </main>
-      <aside class="qc-pane"><h2>QC · ${q.total}</h2>${findings || '<p class="hint">No findings.</p>'}</aside>
-    </div>`;
+      <aside class="qc-pane"><h2>QC · ${q.total}</h2>
+        <p class="hint">Click a finding to jump and highlight it in the section body.</p>
+        ${findings || '<p class="hint">No findings.</p>'}
+      </aside>
+    </div>
+    <div id="qc-anchor" class="qc-anchor" hidden role="dialog" aria-label="QC finding"></div>`;
 }
 
 function render() {
@@ -441,6 +598,7 @@ function bind() {
     state.view = 'home';
     state.job = null;
     state.findings = [];
+    state.qcFocus = null;
     render();
   });
   document.getElementById('btn-export')?.addEventListener('click', exportJob);
@@ -466,9 +624,25 @@ function bind() {
   document.querySelectorAll('.finding[data-jump]').forEach((el) => {
     el.addEventListener('click', async () => {
       await flushInlineToSection(false);
-      state.selected = el.getAttribute('data-jump');
+      const fid = el.getAttribute('data-fid');
+      const secNum = el.getAttribute('data-jump');
+      const finding =
+        state.findings.find((f) => f.findingId === fid) ||
+        state.findings.find((f) => f.section === secNum && el.textContent?.includes(f.code));
+      state.selected = secNum;
+      state.qcFocus = finding || null;
       render();
     });
+  });
+
+  document.getElementById('qc-anchor')?.addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-qa="close"]')) {
+      state.qcFocus = null;
+      const panel = document.getElementById('qc-anchor');
+      renderQcAnchor(panel, null);
+      clearQcHits(document.getElementById('wysiwyg-root'));
+      document.querySelectorAll('.finding.active').forEach((f) => f.classList.remove('active'));
+    }
   });
 
   const root = document.getElementById('wysiwyg-root');
@@ -481,6 +655,34 @@ function bind() {
       onBracketApply,
     });
   }
+
+  // Inline QC marks + jump/highlight for the open section
+  if (root && state.selected) {
+    decorateQcMarks(root, state.findings, state.selected);
+    if (state.qcFocus && state.qcFocus.section === state.selected) {
+      applyQcFocus(root, state.qcFocus);
+    } else if (state.qcFocus && state.qcFocus.section !== state.selected) {
+      // Section switched away — keep list selection but clear body highlight
+      renderQcAnchor(document.getElementById('qc-anchor'), null);
+    }
+  }
+
+  // Clicking an inline QC mark focuses that finding
+  root?.querySelectorAll('.qc-mark[data-qc-id]').forEach((el) => {
+    el.addEventListener('click', (ev) => {
+      // Don't steal bracket picker clicks — only when not a bracket open intent
+      const fid = el.getAttribute('data-qc-id');
+      const finding = state.findings.find((f) => f.findingId === fid);
+      if (!finding) return;
+      // Allow bracket picker to also open; still show QC anchor for non-bracket marks
+      if (el.classList.contains('bracket')) return;
+      ev.stopPropagation();
+      state.qcFocus = finding;
+      applyQcFocus(root, finding);
+      document.querySelectorAll('.finding.active').forEach((f) => f.classList.remove('active'));
+      document.querySelector(`.finding[data-fid="${CSS.escape(fid)}"]`)?.classList.add('active');
+    });
+  });
 }
 
 render();
