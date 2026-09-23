@@ -15,6 +15,11 @@ job/
   si-offline-job.json
   lineage/03 30 00.lineage.json
   journal/03 30 00.journal.json
+  annotations/03 30 00.annotations.json
+  outline.json
+  qc.json
+  changelog.json|html|md
+  annotations.json|html|md   # review export (optional)
 ```
 
 ## Formats
@@ -25,8 +30,24 @@ job/
 | Per-section origin | `si-offline-lineage` |
 | Per-section ops | `si-offline-change-journal` |
 | QC snapshot | `si-offline-qc` |
+| Per-section review notes | `si-offline-annotations` |
+| Job annotations review export | `si-offline-annotations-review` |
 
 `formatVersion`: `1`.
+
+## Review annotations
+
+Freeform SME / reviewer notes anchored to content (span or section). **Sidecar only** — never written into `.sec`.
+
+Anchors (fail-closed soft reattach):
+
+1. `tagPath` + `pathIndices` (structural path from SEC)
+2. `tag` + `snippet` + `snippetHash`
+3. optional character offsets
+4. session `nid` hint (not durable across re-parse)
+
+Orphaned anchors surface as section-level / “reattach needed”. No invented `.sec` markup.
+
 
 ## Origin kinds
 

@@ -2,6 +2,7 @@ import { parseSec } from './sec/parse.js';
 import { hashSecText } from './sec/hash.js';
 import { lineageFromImport, lineageFromMaster } from './lineage.js';
 import { emptyJournal, pullOriginOp, appendOp } from './journal.js';
+import { emptyAnnotations } from './annotations.js';
 import { readZip, zipToBlob, writeZip } from './zip.js';
 
 const SEC_NAME = /(?:^|\/)([^/]*\.sec)$/i;
@@ -77,7 +78,15 @@ export async function loadJobFromZipBuffer(buf, { asMaster = false, sourceLabel 
         originHash: hash,
       }));
     }
-    sections.push({ number, title: parsed.title, path: f.path, text: f.text, parsed, hash, lineage, journal });
+    let annotations = null;
+    const aPath = Object.keys(filesMap).find((p) => p.endsWith(`annotations/${number}.annotations.json`));
+    if (aPath) {
+      try { annotations = JSON.parse(filesMap[aPath]); } catch { annotations = null; }
+    }
+    if (!annotations || annotations.format !== 'si-offline-annotations') {
+      annotations = emptyAnnotations({ sectionNumber: number });
+    }
+    sections.push({ number, title: parsed.title, path: f.path, text: f.text, parsed, hash, lineage, journal, annotations });
   }
 
   
@@ -123,6 +132,9 @@ export async function buildJobZip(jobState) {
     files[`${s.number}.sec`] = s.text;
     if (s.lineage) files[`lineage/${s.number}.lineage.json`] = JSON.stringify(s.lineage, null, 2);
     if (s.journal) files[`journal/${s.number}.journal.json`] = JSON.stringify(s.journal, null, 2);
+    if (s.annotations && (s.annotations.annotations || []).length) {
+      files[`annotations/${s.number}.annotations.json`] = JSON.stringify(s.annotations, null, 2);
+    }
   }
   if (jobState.qc) {
     files['qc.json'] = JSON.stringify({
@@ -145,6 +157,11 @@ export async function buildJobZip(jobState) {
     files['changelog.json'] = JSON.stringify(jobState.changelog, null, 2);
     if (jobState.changelogHtml) files['changelog.html'] = jobState.changelogHtml;
     if (jobState.changelogMd) files['changelog.md'] = jobState.changelogMd;
+  }
+  if (jobState.annotationsReview) {
+    files['annotations.json'] = JSON.stringify(jobState.annotationsReview, null, 2);
+    if (jobState.annotationsHtml) files['annotations.html'] = jobState.annotationsHtml;
+    if (jobState.annotationsMd) files['annotations.md'] = jobState.annotationsMd;
   }
 
   return zipToBlob(files);

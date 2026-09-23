@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "si-offline-annotations",
+  "title": "si-offline-annotations",
+  "type": "object",
+  "required": ["format", "formatVersion", "sectionNumber", "annotations"],
+  "properties": {
+    "format": { "const": "si-offline-annotations" },
+    "formatVersion": { "const": 1 },
+    "sectionNumber": { "type": "string" },
+    "annotations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "at", "body", "status", "anchor"],
+        "properties": {
+          "id": { "type": "string" },
+          "at": { "type": "string" },
+          "updatedAt": { "type": "string" },
+          "author": { "type": "object" },
+          "body": { "type": "string" },
+          "status": { "enum": ["open", "resolved"] },
+          "anchor": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": { "enum": ["span", "host", "section"] },
+              "tag": { "type": "string" },
+              "tagPath": { "type": "array", "items": { "type": "string" } },
+              "pathIndices": { "type": "array", "items": { "type": "integer" } },
+              "snippet": { "type": "string" },
+              "snippetHash": { "type": "string" },
+              "startOffset": { "type": ["integer", "null"] },
+              "endOffset": { "type": ["integer", "null"] },
+              "nid": { "type": ["string", "null"] },
+              "orphan": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
