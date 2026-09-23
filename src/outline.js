@@ -21,7 +21,7 @@ export function setSectionStatus(jobState, number, status) {
  * Insert a section from masters library into the Job if the number is not already present.
  * Fail-closed if duplicate number.
  */
-export function insertSectionFromLibrary(jobState, libSection, { lineageFactory, journalFactory, parseSec, hashSecText }) {
+export function insertSectionFromLibrary(jobState, libSection, { lineageFactory, journalFactory, annotationsFactory, parseSec, hashSecText }) {
   if (!libSection?.number || !libSection?.text) {
     return { ok: false, reason: 'Library section missing number/text.' };
   }
@@ -58,6 +58,9 @@ export function insertSectionFromLibrary(jobState, libSection, { lineageFactory,
         hash,
         lineage,
         journal,
+        annotations: annotationsFactory
+          ? annotationsFactory({ sectionNumber: parsed.number })
+          : { format: 'si-offline-annotations', formatVersion: 1, sectionNumber: parsed.number, annotations: [] },
       };
     },
   };

@@ -1,6 +1,6 @@
 {
   "name": "si-offline",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,11 +10,12 @@
     "preview": "vite preview",
     "test:roundtrip": "node scripts/roundtrip-sec.mjs",
     "test:qc": "node scripts/qc-fixture-check.mjs",
-    "test": "npm run test:roundtrip && npm run test:qc && npm run test:brackets",
-    "test:brackets": "node scripts/test-brackets.mjs"
+    "test": "npm run test:roundtrip && npm run test:qc && npm run test:brackets && npm run test:annotations",
+    "test:brackets": "node scripts/test-brackets.mjs",
+    "test:annotations": "node scripts/test-annotations.mjs"
   },
   "devDependencies": {
     "vite": "^8.3.0"
   },
-  "description": "Offline SpecsIntact alternative: .sec editor, QC-gated export, masters library, change log, tag-aware find, outline status. No CMS."
+  "description": "Offline SpecsIntact alternative: .sec editor, review annotations (sidecar), QC-gated export, masters library, change log, tag-aware find, outline status. No CMS."
 }

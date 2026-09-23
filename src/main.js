@@ -33,10 +33,25 @@ import {
 } from './outline.js';
 import { lineageFromImport } from './lineage.js';
 import { emptyJournal, pullOriginOp } from './journal.js';
+import {
+  emptyAnnotations,
+  ensureAnnotations,
+  createAnnotation,
+  updateAnnotation,
+  deleteAnnotation,
+  resolveAnnotation,
+  captureAnchorFromSelection,
+  findAnnotationTarget,
+  sectionAnchor,
+  countForJob,
+  flattenAnnotations,
+  annotationsToHtml,
+  annotationsToMarkdown,
+} from './annotations.js';
 
 const SAMPLE = sampleJobUrl;
 const app = document.querySelector('#app');
-const APP_VERSION = '0.5.0';
+const APP_VERSION = '0.6.0';
 
 let state = {
   view: 'home',
@@ -45,6 +60,16 @@ let state = {
   findings: [],
   /** @type {null | object} finding currently jumped-to / highlighted in the body */
   qcFocus: null,
+  /** @type {'qc' | 'comments'} right-pane tab */
+  sideTab: 'qc',
+  /** @type {null | object} annotation currently jumped-to / highlighted */
+  annFocus: null,
+  /** Draft comment composer */
+  annDraft: '',
+  /** Show resolved annotations in sidebar */
+  annShowResolved: false,
+  /** Anchor captured before a re-render (selection is lost on render) */
+  pendingAnchor: null,
   status: '',
   error: '',
   authorName: localStorage.getItem('si-offline-author') || '',
@@ -172,6 +197,87 @@ function applyQcFocus(rootEl, finding) {
   return target;
 }
 
+
+function clearAnnHits(rootEl) {
+  rootEl?.querySelectorAll?.('.ann-hit')?.forEach((el) => el.classList.remove('ann-hit'));
+}
+
+function decorateAnnMarks(rootEl, sec) {
+  if (!rootEl || !sec) return;
+  rootEl.querySelectorAll('.ann-mark').forEach((el) => {
+    el.classList.remove('ann-mark', 'ann-orphan');
+    el.removeAttribute('data-ann-id');
+    el.removeAttribute('data-ann-badge');
+  });
+  const store = ensureAnnotations(sec);
+  for (const a of store.annotations || []) {
+    if (a.status === 'resolved') continue;
+    const { el, orphan } = findAnnotationTarget(rootEl, a);
+    if (!el) continue;
+    el.classList.add('ann-mark');
+    if (orphan) el.classList.add('ann-orphan');
+    el.setAttribute('data-ann-id', a.id);
+    el.setAttribute('data-ann-badge', orphan ? 'reattach' : 'note');
+    // Persist orphan flag softly (sidecar only — never .sec)
+    if (orphan && a.anchor && !a.anchor.orphan) {
+      a.anchor = { ...a.anchor, orphan: true };
+    } else if (!orphan && a.anchor?.orphan) {
+      a.anchor = { ...a.anchor, orphan: false };
+    }
+  }
+}
+
+function applyAnnFocus(rootEl, annotation) {
+  clearAnnHits(rootEl);
+  if (!annotation || !rootEl) return null;
+  const { el } = findAnnotationTarget(rootEl, annotation);
+  if (!el) return null;
+  el.classList.add('ann-hit');
+  try {
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  } catch {
+    try { el.scrollIntoView(true); } catch { /* ignore */ }
+  }
+  return el;
+}
+
+function addCommentFromSelection() {
+  const sec = selectedSection();
+  const root = document.getElementById('wysiwyg-root');
+  if (!sec || !root) {
+    setStatus('Open a section to add a comment.', true);
+    return;
+  }
+  state.authorName = document.getElementById('author-name')?.value ?? state.authorName;
+  localStorage.setItem('si-offline-author', state.authorName || '');
+  const body = (state.annDraft || '').trim() || (document.getElementById('ann-draft')?.value || '').trim();
+  if (!body) {
+    setStatus('Type a comment first (sidebar draft or select text then Add comment).', true);
+    state.sideTab = 'comments';
+    render();
+    return;
+  }
+  const anchor = state.pendingAnchor || captureAnchorFromSelection(root);
+  state.pendingAnchor = null;
+  const ann = createAnnotation({
+    sectionNumber: sec.number,
+    body,
+    author: { displayName: state.authorName || 'unspecified', id: null },
+    anchor,
+  });
+  const store = ensureAnnotations(sec);
+  store.annotations = [...store.annotations, ann];
+  sec.annotations = store;
+  state.annDraft = '';
+  state.annFocus = ann;
+  state.sideTab = 'comments';
+  const orphanNote = anchor.kind === 'section' || anchor.orphan
+    ? ' (section-level — reattach if needed)'
+    : '';
+  state.status = `Comment added on ${sec.number}${orphanNote}. .sec unchanged.`;
+  render();
+}
+
 function runJobQc() {
   if (!state.job) return;
   state.findings = runQc(state.job.sections.map((s) => s.parsed));
@@ -246,6 +352,22 @@ async function exportJob() {
     state.job.changelog = changelog;
     state.job.changelogHtml = changelogToHtml(changelog);
     state.job.changelogMd = changelogToMarkdown(changelog);
+    const annRows = flattenAnnotations(state.job);
+    if (annRows.length) {
+      state.job.annotationsReview = {
+        format: 'si-offline-annotations-review',
+        formatVersion: 1,
+        exportedAt: new Date().toISOString(),
+        job: state.job.job,
+        annotations: annRows,
+      };
+      state.job.annotationsHtml = annotationsToHtml(state.job, annRows);
+      state.job.annotationsMd = annotationsToMarkdown(state.job, annRows);
+    } else {
+      state.job.annotationsReview = null;
+      state.job.annotationsHtml = null;
+      state.job.annotationsMd = null;
+    }
     const blob = await buildJobZip(state.job);
     const name = `${(state.job.job.name || 'job').replace(/\s+/g, '-')}.zip`;
     const url = URL.createObjectURL(blob);
@@ -468,7 +590,7 @@ function renderHome() {
     </div>
     <header class="topbar">
       <h1>Offline SI</h1>
-      <span class="meta">v${APP_VERSION} · guided bracket picker</span>
+      <span class="meta">v${APP_VERSION} · review comments + QC</span>
     </header>
     <main class="main">
       <div class="card">
@@ -520,6 +642,30 @@ function renderJob() {
   </div>`;
     })
     .join('');
+  const annCounts = countForJob(job.sections);
+  const secStore = sec ? ensureAnnotations(sec) : null;
+  const annList = (secStore?.annotations || [])
+    .filter((a) => state.annShowResolved || a.status !== 'resolved')
+    .map((a) => {
+      const active = state.annFocus && state.annFocus.id === a.id ? 'active' : '';
+      const orphan = a.anchor?.orphan ? 'orphan' : '';
+      const snip = a.anchor?.snippet || (a.anchor?.kind === 'section' ? '(section)' : '');
+      return `<div class="ann-item ${escapeHtml(a.status)} ${active} ${orphan}" data-ann="${escapeHtml(a.id)}" data-ann-sec="${escapeHtml(sec.number)}">
+    <div class="ann-meta"><span class="code">${escapeHtml(a.status)}</span>
+      <span class="hint">${escapeHtml(a.author?.displayName || '')} · ${escapeHtml((a.at || '').slice(0, 19).replace('T', ' '))}</span></div>
+    <p class="ann-body">${escapeHtml(a.body)}</p>
+    ${snip ? `<span class="snippet">${escapeHtml(String(snip).slice(0, 80))}${a.anchor?.orphan ? ' · reattach needed' : ''}</span>` : ''}
+    <div class="ann-actions">
+      <button type="button" class="linkish" data-ann-jump="${escapeHtml(a.id)}">Jump</button>
+      ${a.status === 'resolved'
+        ? `<button type="button" class="linkish" data-ann-reopen="${escapeHtml(a.id)}">Reopen</button>`
+        : `<button type="button" class="linkish" data-ann-resolve="${escapeHtml(a.id)}">Resolve</button>`}
+      <button type="button" class="linkish" data-ann-edit="${escapeHtml(a.id)}">Edit</button>
+      <button type="button" class="linkish dangerish" data-ann-del="${escapeHtml(a.id)}">Delete</button>
+    </div>
+  </div>`;
+    })
+    .join('');
   const origin = sec?.lineage?.origin;
   const paper = sec
     ? renderEditableHtml(sec.parsed)
@@ -529,7 +675,7 @@ function renderJob() {
     <div class="proposal-banner">Offline SI — working files only. Process &amp; Print remains official SpecsIntact. <strong>Pick options</strong> for brackets.</div>
     <header class="topbar">
       <h1>Offline SI</h1>
-      <span class="meta">${escapeHtml(job.job.name || '')} · ${job.sections.length} sections · ${q.errors} QC errors · v${APP_VERSION}</span>
+      <span class="meta">${escapeHtml(job.job.name || '')} · ${job.sections.length} sections · ${q.errors} QC · ${annCounts.open} open comments · v${APP_VERSION}</span>
       <button type="button" id="btn-find">Find</button>
       <button type="button" id="btn-masters">Masters</button>
       <button type="button" id="btn-changelog">Change log</button>
@@ -564,6 +710,7 @@ function renderJob() {
             <div class="field inline"><label for="author-name">Author</label><input id="author-name" value="${escapeHtml(state.authorName)}" placeholder="display name" /></div>
             <div class="field inline grow"><label for="edit-rationale">Rationale</label><input id="edit-rationale" value="${escapeHtml(state.rationale)}" placeholder="optional save note" /></div>
             <button type="button" class="primary" id="btn-save">Save section + journal</button>
+            <button type="button" id="btn-add-comment" title="Select text (or click a host) then add a review comment — sidecar only">Add comment</button>
           </div>
           ${toolbarHtml()}
           <div class="paper wysiwyg-surface" data-mode="edit" id="wysiwyg-root">${paper}</div>
@@ -577,9 +724,25 @@ function renderJob() {
             : ''
         }
       </main>
-      <aside class="qc-pane"><h2>QC · ${q.total}</h2>
+      <aside class="qc-pane">
+        <div class="side-tabs" role="tablist">
+          <button type="button" class="side-tab ${state.sideTab==='qc'?'active':''}" data-side-tab="qc" role="tab">QC · ${q.total}</button>
+          <button type="button" class="side-tab ${state.sideTab==='comments'?'active':''}" data-side-tab="comments" role="tab">Comments · ${annCounts.open}${annCounts.total && annCounts.total!==annCounts.open ? `/${annCounts.total}` : ''}</button>
+        </div>
+        ${state.sideTab === 'qc' ? `
         <p class="hint">Click a finding to jump and highlight it in the section body. Detail stays in this sidebar (once).</p>
         ${findings || '<p class="hint">No findings.</p>'}
+        ` : `
+        <p class="hint">Select text or click a host, type below, then <strong>Add comment</strong>. Sidecar only — never written into .sec.</p>
+        <div class="ann-composer">
+          <textarea id="ann-draft" rows="3" placeholder="Review note…">${escapeHtml(state.annDraft)}</textarea>
+          <div class="ann-composer-actions">
+            <button type="button" class="primary" id="btn-ann-add">Add comment</button>
+            <label class="hint"><input type="checkbox" id="ann-show-resolved" ${state.annShowResolved?'checked':''}/> Show resolved</label>
+          </div>
+        </div>
+        ${annList || '<p class="hint">No comments on this section yet.</p>'}
+        `}
       </aside>
     </div>
     ${renderModal()}`;
@@ -704,6 +867,7 @@ function bind() {
     state.job = null;
     state.findings = [];
     state.qcFocus = null;
+    state.annFocus = null;
     render();
   });
   document.getElementById('btn-export')?.addEventListener('click', exportJob);
@@ -780,6 +944,170 @@ function bind() {
     });
   });
 
+  // Inline annotation marks + jump/highlight
+  const secNow = selectedSection();
+  if (root && secNow) {
+    decorateAnnMarks(root, secNow);
+    if (state.annFocus && state.annFocus.id) {
+      // Re-resolve focus against current section store
+      const live = (secNow.annotations?.annotations || []).find((a) => a.id === state.annFocus.id);
+      if (live && state.selected === secNow.number) {
+        state.annFocus = live;
+        applyAnnFocus(root, live);
+      } else {
+        clearAnnHits(root);
+      }
+    }
+  }
+  root?.querySelectorAll('.ann-mark[data-ann-id]').forEach((el) => {
+    el.addEventListener('click', (ev) => {
+      if (el.classList.contains('bracket')) return;
+      const id = el.getAttribute('data-ann-id');
+      const sec = selectedSection();
+      const ann = (sec?.annotations?.annotations || []).find((a) => a.id === id);
+      if (!ann) return;
+      ev.stopPropagation();
+      state.sideTab = 'comments';
+      state.annFocus = ann;
+      applyAnnFocus(root, ann);
+      document.querySelectorAll('.ann-item.active').forEach((n) => n.classList.remove('active'));
+      document.querySelector(`.ann-item[data-ann="${CSS.escape(id)}"]`)?.classList.add('active');
+    });
+  });
+
+  // --- v0.6.0 annotations + v0.5.0 feature wiring ---
+  document.querySelectorAll('[data-side-tab]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const next = el.getAttribute('data-side-tab') === 'comments' ? 'comments' : 'qc';
+      if (next === 'comments') {
+        const r = document.getElementById('wysiwyg-root');
+        const a = captureAnchorFromSelection(r);
+        // Keep a pending span/host anchor across the re-render that kills the live selection
+        if (a && a.kind !== 'section') state.pendingAnchor = a;
+      }
+      state.sideTab = next;
+      render();
+    });
+  });
+  document.getElementById('ann-draft')?.addEventListener('input', (e) => {
+    state.annDraft = e.target.value;
+  });
+  document.getElementById('ann-show-resolved')?.addEventListener('change', (e) => {
+    state.annShowResolved = !!e.target.checked;
+    render();
+  });
+  document.getElementById('btn-ann-add')?.addEventListener('click', () => {
+    const r = document.getElementById('wysiwyg-root');
+    if (!state.pendingAnchor) {
+      const a = captureAnchorFromSelection(r);
+      if (a) state.pendingAnchor = a;
+    }
+    state.annDraft = document.getElementById('ann-draft')?.value ?? state.annDraft;
+    addCommentFromSelection();
+  });
+  document.getElementById('btn-add-comment')?.addEventListener('click', () => {
+    const r = document.getElementById('wysiwyg-root');
+    const a = captureAnchorFromSelection(r);
+    if (a && a.kind !== 'section') state.pendingAnchor = a;
+    state.sideTab = 'comments';
+    const draft = (document.getElementById('ann-draft')?.value || state.annDraft || '').trim();
+    if (draft) {
+      state.annDraft = draft;
+      addCommentFromSelection();
+    } else {
+      render();
+      setTimeout(() => document.getElementById('ann-draft')?.focus(), 0);
+      setStatus(
+        state.pendingAnchor
+          ? 'Anchor captured. Type a comment in the sidebar, then Add comment.'
+          : 'Select text in the body (optional), type a comment in the sidebar, then Add comment.'
+      );
+    }
+  });
+  document.querySelectorAll('[data-ann-jump]').forEach((el) => {
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const id = el.getAttribute('data-ann-jump');
+      const sec = selectedSection();
+      const ann = (sec?.annotations?.annotations || []).find((a) => a.id === id);
+      if (!ann) return;
+      state.annFocus = ann;
+      state.sideTab = 'comments';
+      const r = document.getElementById('wysiwyg-root');
+      applyAnnFocus(r, ann);
+      document.querySelectorAll('.ann-item.active').forEach((n) => n.classList.remove('active'));
+      document.querySelector(`.ann-item[data-ann="${CSS.escape(id)}"]`)?.classList.add('active');
+    });
+  });
+  document.querySelectorAll('[data-ann-resolve]').forEach((el) => {
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const id = el.getAttribute('data-ann-resolve');
+      const sec = selectedSection();
+      if (!sec) return;
+      sec.annotations = resolveAnnotation(ensureAnnotations(sec), id, true);
+      if (state.annFocus?.id === id) state.annFocus = (sec.annotations.annotations || []).find((a) => a.id === id) || null;
+      state.status = 'Comment resolved (sidecar).';
+      render();
+    });
+  });
+  document.querySelectorAll('[data-ann-reopen]').forEach((el) => {
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const id = el.getAttribute('data-ann-reopen');
+      const sec = selectedSection();
+      if (!sec) return;
+      sec.annotations = resolveAnnotation(ensureAnnotations(sec), id, false);
+      state.status = 'Comment reopened.';
+      render();
+    });
+  });
+  document.querySelectorAll('[data-ann-edit]').forEach((el) => {
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const id = el.getAttribute('data-ann-edit');
+      const sec = selectedSection();
+      const ann = (sec?.annotations?.annotations || []).find((a) => a.id === id);
+      if (!ann) return;
+      const next = window.prompt('Edit comment', ann.body || '');
+      if (next == null) return;
+      const body = String(next).trim();
+      if (!body) {
+        setStatus('Comment body cannot be empty.', true);
+        return;
+      }
+      sec.annotations = updateAnnotation(ensureAnnotations(sec), id, { body });
+      state.annFocus = (sec.annotations.annotations || []).find((a) => a.id === id) || null;
+      state.status = 'Comment updated (sidecar).';
+      render();
+    });
+  });
+  document.querySelectorAll('[data-ann-del]').forEach((el) => {
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const id = el.getAttribute('data-ann-del');
+      const sec = selectedSection();
+      if (!sec) return;
+      if (!window.confirm('Delete this comment? Sidecar only — .sec unchanged.')) return;
+      sec.annotations = deleteAnnotation(ensureAnnotations(sec), id);
+      if (state.annFocus?.id === id) state.annFocus = null;
+      state.status = 'Comment deleted.';
+      render();
+    });
+  });
+  document.querySelectorAll('.ann-item[data-ann]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const id = el.getAttribute('data-ann');
+      const sec = selectedSection();
+      const ann = (sec?.annotations?.annotations || []).find((a) => a.id === id);
+      if (!ann) return;
+      state.annFocus = ann;
+      const r = document.getElementById('wysiwyg-root');
+      applyAnnFocus(r, ann);
+      document.querySelectorAll('.ann-item.active').forEach((n) => n.classList.remove('active'));
+      el.classList.add('active');
+    });
+  });
 
   // --- v0.5.0 feature wiring (names match imports) ---
   document.getElementById('btn-find')?.addEventListener('click', () => {
@@ -915,6 +1243,7 @@ function bind() {
       const result = insertSectionFromLibrary(state.job, libSec, {
         lineageFactory: lineageFromImport,
         journalFactory: emptyJournal,
+        annotationsFactory: emptyAnnotations,
         parseSec,
         hashSecText,
       });
