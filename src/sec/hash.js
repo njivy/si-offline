@@ -7,12 +7,12 @@ function bytesToHex(buf) {
 }
 
 async function sha256Bytes(bytes) {
-  if (globalThis.crypto?.subtle) {
-    const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
-    return bytesToHex(digest);
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw new Error('Web Crypto SubtleCrypto required (use a modern browser or Node 19+)');
   }
-  const { createHash } = await import('node:crypto');
-  return createHash('sha256').update(Buffer.from(bytes)).digest('hex');
+  const digest = await subtle.digest('SHA-256', bytes);
+  return bytesToHex(digest);
 }
 
 /** @returns {Promise<string>} sha256:<hex> of normalized .sec text */

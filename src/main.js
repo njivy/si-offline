@@ -4,9 +4,11 @@ import { runQc, summarizeFindings } from './qc/index.js';
 import { originLabel, updateCurrentHash } from './lineage.js';
 import { serializeSec } from './sec/serialize.js';
 import { hashSecText } from './sec/hash.js';
+import { parseSec } from './sec/parse.js';
+import sampleJobUrl from './fixtures/job-minimal.js';
 import { appendOp, textEditOp } from './journal.js';
 
-const SAMPLE = './fixtures/job-minimal.zip';
+const SAMPLE = sampleJobUrl;
 const app = document.querySelector('#app');
 
 let state = {
@@ -127,7 +129,6 @@ async function saveTextEdit() {
   }
   sec.text = next;
   sec.hash = afterHash;
-  const { parseSec } = await import('./sec/parse.js');
   sec.parsed = parseSec(next);
   sec.parsed.number = sec.parsed.number || sec.number;
   sec.title = sec.parsed.title || sec.title;
@@ -156,7 +157,7 @@ function renderHome() {
     </div>
     <header class="topbar">
       <h1>Offline SI</h1>
-      <span class="meta">v0.1.0 · lineage + QC</span>
+      <span class="meta">v0.2.2 · lineage + QC</span>
     </header>
     <main class="main">
       <div class="card">
