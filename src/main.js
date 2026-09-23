@@ -1,7 +1,7 @@
 import './style.css';
 import { loadJobFromZipBuffer, loadJobFromSecFiles, buildJobZip } from './pack.js';
 import { escapeHtml } from './render.js';
-import { runQc, summarizeFindings } from './qc/index.js';
+import { runQc, summarizeFindings, exportBlockingFindings } from './qc/index.js';
 import { originLabel, updateCurrentHash } from './lineage.js';
 import { hashSecText } from './sec/hash.js';
 import { parseSec } from './sec/parse.js';
@@ -16,10 +16,27 @@ import {
   applyChoiceInTree,
   applyFillInTree,
 } from './wysiwyg.js';
+import {
+  saveMastersLibrary,
+  loadMastersLibrary,
+  libraryFromJob,
+  findInLibrary,
+  compareTexts,
+} from './masters.js';
+import { buildJobChangelog, changelogToHtml, changelogToMarkdown } from './changelog.js';
+import { searchJob, previewReplace } from './find.js';
+import {
+  getSectionStatus,
+  setSectionStatus,
+  insertSectionFromLibrary,
+  SECTION_STATUSES,
+} from './outline.js';
+import { lineageFromImport } from './lineage.js';
+import { emptyJournal, pullOriginOp } from './journal.js';
 
 const SAMPLE = sampleJobUrl;
 const app = document.querySelector('#app');
-const APP_VERSION = '0.4.1';
+const APP_VERSION = '0.5.0';
 
 let state = {
   view: 'home',
@@ -34,6 +51,16 @@ let state = {
   rationale: '',
   showNotes: true,
   showRaw: false,
+  /** @type {null | object} offline masters library */
+  mastersLib: null,
+  findQuery: '',
+  findFilter: 'text',
+  findHits: [],
+  findPreview: null,
+  modal: null, // 'find' | 'masters' | 'compare' | 'structure' | null
+  exportOverride: false,
+  compareResult: null,
+  mastersLib: null,
 };
 
 let unbindWy = null;
@@ -129,79 +156,21 @@ function decorateQcMarks(rootEl, findings, sectionNumber) {
 }
 
 /**
- * Position a small anchored detail card next to the offending span.
- */
-function positionQcAnchor(panel, anchorEl) {
-  if (!panel || !anchorEl) return;
-  panel.hidden = false;
-  try {
-    anchorEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  } catch {
-    try { anchorEl.scrollIntoView(true); } catch { /* ignore */ }
-  }
-  const place = () => {
-    const r = anchorEl.getBoundingClientRect();
-    const pw = Math.min(panel.offsetWidth || 300, window.innerWidth - 16);
-    const ph = panel.offsetHeight || 120;
-    let top = r.bottom + 10;
-    if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 10);
-    let left = r.left;
-    if (left + pw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - pw - 8);
-    if (left < 8) left = 8;
-    panel.style.top = `${Math.round(top)}px`;
-    panel.style.left = `${Math.round(left)}px`;
-  };
-  place();
-  requestAnimationFrame(place);
-}
-
-function renderQcAnchor(panel, finding) {
-  if (!panel) return;
-  if (!finding) {
-    panel.hidden = true;
-    panel.innerHTML = '';
-    return;
-  }
-  const snip = finding.locator?.snippet || finding.locator?.rid || finding.locator?.cited || '';
-  panel.innerHTML = `
-    <div class="qa-head">
-      <span class="qa-code">${escapeHtml(finding.code || '')}</span>
-      <span class="hint">${escapeHtml(finding.severity || '')}</span>
-      <button type="button" class="qa-close" data-qa="close" title="Close">×</button>
-    </div>
-    <p><strong>${escapeHtml(finding.section || '')}</strong> — ${escapeHtml(finding.message || '')}</p>
-    ${snip ? `<p class="hint"><code>${escapeHtml(String(snip).slice(0, 80))}</code></p>` : ''}
-    ${finding.fixHint ? `<p class="hint">${escapeHtml(finding.fixHint)}</p>` : ''}
-  `;
-}
-
-/**
  * Scroll + highlight the offending span and show anchored QC detail.
  */
 function applyQcFocus(rootEl, finding) {
-  const panel = document.getElementById('qc-anchor');
   clearQcHits(rootEl);
-  if (!finding || !rootEl) {
-    renderQcAnchor(panel, null);
-    return null;
-  }
+  if (!finding || !rootEl) return null;
   const target = findQcTarget(rootEl, finding);
-  if (!target) {
-    renderQcAnchor(panel, finding);
-    if (panel) {
-      // Still show detail near paper top-left if we can't resolve a span
-      panel.style.top = '120px';
-      panel.style.left = '340px';
-      panel.hidden = false;
-    }
-    return null;
-  }
+  if (!target) return null;
   target.classList.add('qc-hit');
-  renderQcAnchor(panel, finding);
-  positionQcAnchor(panel, target);
+  try {
+    target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  } catch {
+    try { target.scrollIntoView(true); } catch { /* ignore */ }
+  }
   return target;
 }
-
 
 function runJobQc() {
   if (!state.job) return;
@@ -262,7 +231,21 @@ async function exportJob() {
   if (!state.job) return;
   try {
     await flushInlineToSection(false);
+    runJobQc();
+    const blocking = exportBlockingFindings(state.findings);
+    if (blocking.length && !state.exportOverride) {
+      state.status = '';
+      state.error = `Export blocked: ${blocking.length} QC error(s). Fix findings (jump from the QC sidebar) or confirm override.`;
+      state.modal = 'export-gate';
+      render();
+      return;
+    }
     state.job.qc = state.findings;
+    if (!state.job.outline) state.job.outline = { statuses: {} };
+    const changelog = buildJobChangelog(state.job);
+    state.job.changelog = changelog;
+    state.job.changelogHtml = changelogToHtml(changelog);
+    state.job.changelogMd = changelogToMarkdown(changelog);
     const blob = await buildJobZip(state.job);
     const name = `${(state.job.job.name || 'job').replace(/\s+/g, '-')}.zip`;
     const url = URL.createObjectURL(blob);
@@ -271,7 +254,12 @@ async function exportJob() {
     a.download = name;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
-    state.status = `Exported ${name}`;
+    state.exportOverride = false;
+    state.modal = null;
+    state.error = '';
+    state.status = blocking.length
+      ? `Exported ${name} (QC override — ${blocking.length} error(s) recorded in qc.json)`
+      : `Exported ${name}`;
     render();
   } catch (e) {
     setStatus(e.message || String(e), true);
@@ -507,11 +495,17 @@ function renderJob() {
       const kind = s.lineage?.origin?.kind || 'imported-sec';
       const active = s.number === state.selected ? 'active' : '';
       const nFind = state.findings.filter((f) => f.section === s.number).length;
+      const st = getSectionStatus(job, s.number);
       return `<li><div class="toc-row ${active}" data-sec="${escapeHtml(s.number)}">
       <span class="toc-num">${escapeHtml(s.number)}</span>
       <span class="toc-title">${escapeHtml(s.title || '')}</span>
       <span class="chip ${chipClass(kind)}">${escapeHtml(originLabel(s.lineage?.origin))}</span>
+      <span class="chip status-${escapeHtml(st)}" title="Outline status (sidecar only)">${escapeHtml(st)}</span>
       ${nFind ? `<span class="hint">${nFind} finding(s)</span>` : ''}
+      <span class="toc-actions">
+        <button type="button" class="linkish" data-status-cycle="${escapeHtml(s.number)}" title="Cycle done / needs-SME / working">Status</button>
+        <button type="button" class="linkish" data-compare="${escapeHtml(s.number)}" title="Compare to masters library">Compare</button>
+      </span>
     </div></li>`;
     })
     .join('');
@@ -536,6 +530,9 @@ function renderJob() {
     <header class="topbar">
       <h1>Offline SI</h1>
       <span class="meta">${escapeHtml(job.job.name || '')} · ${job.sections.length} sections · ${q.errors} QC errors · v${APP_VERSION}</span>
+      <button type="button" id="btn-find">Find</button>
+      <button type="button" id="btn-masters">Masters</button>
+      <button type="button" id="btn-changelog">Change log</button>
       <button type="button" id="btn-home">Close Job</button>
       <button type="button" class="primary" id="btn-export">Export Job ZIP</button>
     </header>
@@ -549,7 +546,20 @@ function renderJob() {
             ? `<div class="card section-card">
           <h3>${escapeHtml(sec.number)} ${escapeHtml(sec.title || '')}</h3>
           <p class="meta-line">Origin: <span class="chip ${chipClass(origin?.kind)}">${escapeHtml(originLabel(origin))}</span> · hash <code>${escapeHtml(sec.hash)}</code></p>
-          <p class="meta-line">Journal entries: ${sec.journal?.entries?.length || 0}</p>
+          <p class="meta-line">Journal entries: ${sec.journal?.entries?.length || 0}
+            · Outline: <strong>${escapeHtml(getSectionStatus(job, sec.number))}</strong>
+            · Masters: ${state.mastersLib ? escapeHtml(state.mastersLib.label) + ` (${state.mastersLib.sections.length})` : 'none loaded'}
+          </p>
+          <div class="structure-panel card-lite">
+            <h4>Structure (SpecsIntact-safe)</h4>
+            <p class="hint">PRT/SPT titles edit inline. Add a REF (RID+RTL) to the References article without inventing markup.</p>
+            <div class="edit-meta">
+              <div class="field inline"><label for="ref-rid">RID</label><input id="ref-rid" placeholder="e.g. ACI 318" /></div>
+              <div class="field inline grow"><label for="ref-rtl">RTL</label><input id="ref-rtl" placeholder="title" /></div>
+              <button type="button" id="btn-add-ref">Add REF</button>
+            </div>
+            <p class="hint">Tables (TAB): cell text is editable when present; new table shapes stay in Advanced raw (fail-closed — no invented table markup).</p>
+          </div>
           <div class="edit-meta">
             <div class="field inline"><label for="author-name">Author</label><input id="author-name" value="${escapeHtml(state.authorName)}" placeholder="display name" /></div>
             <div class="field inline grow"><label for="edit-rationale">Rationale</label><input id="edit-rationale" value="${escapeHtml(state.rationale)}" placeholder="optional save note" /></div>
@@ -568,11 +578,106 @@ function renderJob() {
         }
       </main>
       <aside class="qc-pane"><h2>QC · ${q.total}</h2>
-        <p class="hint">Click a finding to jump and highlight it in the section body.</p>
+        <p class="hint">Click a finding to jump and highlight it in the section body. Detail stays in this sidebar (once).</p>
         ${findings || '<p class="hint">No findings.</p>'}
       </aside>
     </div>
-    <div id="qc-anchor" class="qc-anchor" hidden role="dialog" aria-label="QC finding"></div>`;
+    ${renderModal()}`;
+}
+
+
+function renderModal() {
+  if (!state.modal) return '';
+  if (state.modal === 'export-gate') {
+    const blocking = exportBlockingFindings(state.findings);
+    const list = blocking
+      .slice(0, 12)
+      .map((f) => `<li><button type="button" class="linkish" data-jump="${escapeHtml(f.section)}" data-fid="${escapeHtml(f.findingId || '')}"><code>${escapeHtml(f.code)}</code> ${escapeHtml(f.section)} — ${escapeHtml(f.message)}</button></li>`)
+      .join('');
+    return `<div class="modal-backdrop" id="modal-root" role="dialog" aria-label="Export blocked">
+      <div class="modal">
+        <h3>Export blocked by QC</h3>
+        <p class="hint">Fail-closed: remaining brackets, unresolved RID/SRF, unmatched tags, or illegal nests must be fixed — or explicitly overridden.</p>
+        <ul class="modal-list">${list || '<li>No details</li>'}</ul>
+        <div class="actions">
+          <button type="button" id="btn-export-cancel">Cancel</button>
+          <button type="button" class="danger" id="btn-export-override">Export anyway (record QC in zip)</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  if (state.modal === 'find') {
+    const hits = (state.findHits || [])
+      .slice(0, 40)
+      .map((h) => `<li><button type="button" class="linkish" data-find-jump="${escapeHtml(h.section)}"><code>${escapeHtml(h.section)}</code> [${escapeHtml(h.kind)}] ${escapeHtml(h.snippet || '')}</button></li>`)
+      .join('');
+    const prev = state.findPreview;
+    return `<div class="modal-backdrop" id="modal-root" role="dialog" aria-label="Find">
+      <div class="modal wide">
+        <h3>Find <span class="hint">(tag-aware · replace previews fail-closed)</span></h3>
+        <div class="edit-meta">
+          <div class="field inline grow"><label for="find-q">Query</label><input id="find-q" value="${escapeHtml(state.findQuery)}" /></div>
+          <div class="field inline"><label for="find-filter">Filter</label>
+            <select id="find-filter">
+              <option value="text" ${state.findFilter==='text'?'selected':''}>Plain text</option>
+              <option value="open_brackets" ${state.findFilter==='open_brackets'?'selected':''}>Open brackets</option>
+              <option value="unresolved_rid" ${state.findFilter==='unresolved_rid'?'selected':''}>Unresolved RID</option>
+              <option value="notes" ${state.findFilter==='notes'?'selected':''}>Notes (NTE/NPR)</option>
+            </select>
+          </div>
+          <button type="button" class="primary" id="btn-find-go">Search</button>
+        </div>
+        <div class="edit-meta">
+          <div class="field inline grow"><label for="find-rep">Replace with</label><input id="find-rep" placeholder="no &lt; &gt; allowed" /></div>
+          <button type="button" id="btn-find-preview">Preview replace</button>
+          <button type="button" class="primary" id="btn-find-apply" ${prev && prev.ok ? '' : 'disabled'}>Apply replace</button>
+        </div>
+        ${prev && !prev.ok ? `<p class="status error">${escapeHtml(prev.reason || 'Blocked')}</p>` : ''}
+        ${prev && prev.ok ? `<p class="hint">Preview: ${prev.previews.length} section(s), ${prev.previews.reduce((n,p)=>n+p.count,0)} replacement(s).</p>` : ''}
+        <ul class="modal-list">${hits || '<li class="hint">No hits yet.</li>'}</ul>
+        <div class="actions"><button type="button" id="btn-modal-close">Close</button></div>
+      </div>
+    </div>`;
+  }
+  if (state.modal === 'masters') {
+    const lib = state.mastersLib;
+    const rows = (lib?.sections || [])
+      .map((s) => {
+        const inJob = state.job?.sections?.some((j) => j.number === s.number);
+        return `<li><code>${escapeHtml(s.number)}</code> ${escapeHtml(s.title || '')}
+          ${inJob ? '<span class="hint">already in Job</span>' : `<button type="button" class="linkish" data-insert-master="${escapeHtml(s.number)}">Insert into Job</button>`}
+        </li>`;
+      })
+      .join('');
+    return `<div class="modal-backdrop" id="modal-root" role="dialog" aria-label="Masters library">
+      <div class="modal wide">
+        <h3>Masters / prior Job library</h3>
+        <p class="hint">Drop a ZIP of masters or a prior Job once. Indexed offline for insert-section and compare. No network.</p>
+        <label class="btn file-btn">Import masters ZIP<input type="file" id="file-masters" accept=".zip,application/zip" /></label>
+        ${lib ? `<p class="meta-line">Loaded: <strong>${escapeHtml(lib.label)}</strong> · ${lib.sections.length} section(s) · ${escapeHtml(lib.importedAt || '')}</p>` : '<p class="hint">No library loaded.</p>'}
+        <ul class="modal-list">${rows || ''}</ul>
+        <div class="actions"><button type="button" id="btn-modal-close">Close</button></div>
+      </div>
+    </div>`;
+  }
+  if (state.modal === 'compare') {
+    const cmp = state.compareResult;
+    if (!cmp) return '';
+    const body = (cmp.rows || [])
+      .filter((r) => r.kind !== 'same')
+      .slice(0, 80)
+      .map((r) => `<tr class="diff-${escapeHtml(r.kind)}"><td>${r.line}</td><td><pre>${escapeHtml(r.left)}</pre></td><td><pre>${escapeHtml(r.right)}</pre></td></tr>`)
+      .join('');
+    return `<div class="modal-backdrop" id="modal-root" role="dialog" aria-label="Compare to master">
+      <div class="modal wide">
+        <h3>Compare ${escapeHtml(cmp.number)} to masters</h3>
+        <p class="hint">${cmp.changed} differing line(s) of ${cmp.total}. Review only — does not rewrite .sec.</p>
+        <table class="diff-table"><thead><tr><th>#</th><th>Master</th><th>Job</th></tr></thead><tbody>${body || '<tr><td colspan="3">Identical</td></tr>'}</tbody></table>
+        <div class="actions"><button type="button" id="btn-modal-close">Close</button></div>
+      </div>
+    </div>`;
+  }
+  return '';
 }
 
 function render() {
@@ -635,15 +740,6 @@ function bind() {
     });
   });
 
-  document.getElementById('qc-anchor')?.addEventListener('click', (ev) => {
-    if (ev.target.closest('[data-qa="close"]')) {
-      state.qcFocus = null;
-      const panel = document.getElementById('qc-anchor');
-      renderQcAnchor(panel, null);
-      clearQcHits(document.getElementById('wysiwyg-root'));
-      document.querySelectorAll('.finding.active').forEach((f) => f.classList.remove('active'));
-    }
-  });
 
   const root = document.getElementById('wysiwyg-root');
   const toolbar = document.getElementById('wysiwyg-toolbar');
@@ -662,8 +758,8 @@ function bind() {
     if (state.qcFocus && state.qcFocus.section === state.selected) {
       applyQcFocus(root, state.qcFocus);
     } else if (state.qcFocus && state.qcFocus.section !== state.selected) {
-      // Section switched away — keep list selection but clear body highlight
-      renderQcAnchor(document.getElementById('qc-anchor'), null);
+      // Section switched away — keep sidebar finding selection; clear body highlight only
+      clearQcHits(root);
     }
   }
 
@@ -674,7 +770,7 @@ function bind() {
       const fid = el.getAttribute('data-qc-id');
       const finding = state.findings.find((f) => f.findingId === fid);
       if (!finding) return;
-      // Allow bracket picker to also open; still show QC anchor for non-bracket marks
+      // Allow bracket picker to also open; sidebar keeps the selected finding
       if (el.classList.contains('bracket')) return;
       ev.stopPropagation();
       state.qcFocus = finding;
@@ -683,6 +779,238 @@ function bind() {
       document.querySelector(`.finding[data-fid="${CSS.escape(fid)}"]`)?.classList.add('active');
     });
   });
+
+
+  // --- v0.5.0 feature wiring (names match imports) ---
+  document.getElementById('btn-find')?.addEventListener('click', () => {
+    state.modal = 'find';
+    state.findHits = [];
+    state.findPreview = null;
+    render();
+  });
+  document.getElementById('btn-masters')?.addEventListener('click', async () => {
+    if (!state.mastersLib) state.mastersLib = await loadMastersLibrary();
+    state.modal = 'masters';
+    render();
+  });
+  document.getElementById('btn-changelog')?.addEventListener('click', () => {
+    if (!state.job) return;
+    const log = buildJobChangelog(state.job);
+    const html = changelogToHtml(log);
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(state.job.job.name || 'job').replace(/\s+/g, '-')}-changelog.html`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    setStatus(`Downloaded change log (${(log.entries || []).length} entries). .sec files unchanged.`);
+  });
+  document.getElementById('btn-modal-close')?.addEventListener('click', () => {
+    state.modal = null;
+    render();
+  });
+  document.getElementById('btn-export-cancel')?.addEventListener('click', () => {
+    state.modal = null;
+    state.exportOverride = false;
+    setStatus('Export cancelled — fix QC findings or override explicitly.');
+  });
+  document.getElementById('btn-export-override')?.addEventListener('click', async () => {
+    state.exportOverride = true;
+    state.modal = null;
+    await exportJob();
+  });
+  document.querySelectorAll('#modal-root [data-jump]').forEach((el) => {
+    el.addEventListener('click', async () => {
+      await flushInlineToSection(false);
+      const secNum = el.getAttribute('data-jump');
+      const fid = el.getAttribute('data-fid');
+      state.selected = secNum;
+      state.qcFocus =
+        state.findings.find((f) => f.findingId === fid) ||
+        state.findings.find((f) => f.section === secNum) ||
+        null;
+      state.modal = null;
+      render();
+    });
+  });
+  document.getElementById('btn-find-go')?.addEventListener('click', () => {
+    state.findQuery = document.getElementById('find-q')?.value || '';
+    state.findFilter = document.getElementById('find-filter')?.value || 'text';
+    state.findHits = searchJob(state.job.sections, {
+      query: state.findQuery,
+      tagFilter: state.findFilter,
+      findings: state.findings,
+    });
+    state.findPreview = null;
+    render();
+  });
+  document.getElementById('btn-find-preview')?.addEventListener('click', () => {
+    state.findQuery = document.getElementById('find-q')?.value || '';
+    const replacement = document.getElementById('find-rep')?.value ?? '';
+    state.findPreview = previewReplace(state.job.sections, {
+      query: state.findQuery,
+      replacement,
+    });
+    render();
+  });
+  document.getElementById('btn-find-apply')?.addEventListener('click', async () => {
+    const prev = state.findPreview;
+    if (!prev?.ok) return;
+    for (const p of prev.previews) {
+      const sec = state.job.sections.find((s) => s.number === p.section);
+      if (!sec) continue;
+      const beforeHash = sec.hash;
+      sec.text = p.afterFull;
+      sec.parsed = parseSec(p.afterFull);
+      sec.parsed._raw = p.afterFull;
+      const afterHash = await hashSecText(p.afterFull);
+      sec.hash = afterHash;
+      sec.lineage = updateCurrentHash(sec.lineage, afterHash);
+      sec.journal = appendOp(
+        sec.journal,
+        textEditOp({
+          author: { displayName: state.authorName || 'unspecified', id: null },
+          beforeHash,
+          afterHash,
+          rationale: `Find/replace: ${state.findQuery}`,
+        })
+      );
+    }
+    state.findPreview = null;
+    state.modal = null;
+    runJobQc();
+    setStatus(`Applied replace in ${prev.previews.length} section(s).`);
+    render();
+  });
+  document.querySelectorAll('[data-find-jump]').forEach((el) => {
+    el.addEventListener('click', async () => {
+      await flushInlineToSection(false);
+      state.selected = el.getAttribute('data-find-jump');
+      state.modal = null;
+      render();
+    });
+  });
+  document.getElementById('file-masters')?.addEventListener('change', async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    try {
+      const job = await loadJobFromZipBuffer(await f.arrayBuffer(), {
+        asMaster: true,
+        sourceLabel: f.name,
+      });
+      const lib = libraryFromJob(job, f.name);
+      await saveMastersLibrary(lib);
+      state.mastersLib = lib;
+      setStatus(`Masters library loaded: ${lib.sections.length} section(s) from ${f.name}`);
+      render();
+    } catch (err) {
+      setStatus(err.message || String(err), true);
+    }
+  });
+  document.querySelectorAll('[data-insert-master]').forEach((el) => {
+    el.addEventListener('click', async () => {
+      const num = el.getAttribute('data-insert-master');
+      const libSec = findInLibrary(state.mastersLib, num);
+      const result = insertSectionFromLibrary(state.job, libSec, {
+        lineageFactory: lineageFromImport,
+        journalFactory: emptyJournal,
+        parseSec,
+        hashSecText,
+      });
+      if (!result.ok) {
+        setStatus(result.reason, true);
+        return;
+      }
+      const sec = await result.build();
+      state.job.sections.push(sec);
+      state.job.sections.sort((a, b) => String(a.number).localeCompare(String(b.number)));
+      state.selected = sec.number;
+      state.modal = null;
+      runJobQc();
+      setStatus(`Inserted section ${sec.number} from masters.`);
+      render();
+    });
+  });
+  document.querySelectorAll('[data-status-cycle]').forEach((el) => {
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const num = el.getAttribute('data-status-cycle');
+      const cur = getSectionStatus(state.job, num);
+      const order = SECTION_STATUSES;
+      const next = order[(Math.max(0, order.indexOf(cur)) + 1) % order.length];
+      state.job = setSectionStatus(state.job, num, next);
+      render();
+    });
+  });
+  document.querySelectorAll('[data-compare]').forEach((el) => {
+    el.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      const num = el.getAttribute('data-compare');
+      if (!state.mastersLib) state.mastersLib = await loadMastersLibrary();
+      const libSec = findInLibrary(state.mastersLib, num);
+      const jobSec = state.job.sections.find((s) => s.number === num);
+      if (!libSec) {
+        setStatus(`No masters copy of ${num}. Load a masters ZIP first.`, true);
+        return;
+      }
+      const cmp = compareTexts(libSec.text, jobSec?.text || '');
+      state.compareResult = { number: num, ...cmp };
+      state.modal = 'compare';
+      render();
+    });
+  });
+  document.getElementById('btn-add-ref')?.addEventListener('click', async () => {
+    const rid = (document.getElementById('ref-rid')?.value || '').trim();
+    const rtl = (document.getElementById('ref-rtl')?.value || '').trim();
+    if (!rid) {
+      setStatus('RID is required.', true);
+      return;
+    }
+    if (/[<>]/.test(rid + rtl)) {
+      setStatus('RID/RTL cannot contain markup.', true);
+      return;
+    }
+    const sec = selectedSection();
+    if (!sec) return;
+    await flushInlineToSection(false);
+    const raw = sec.text;
+    const refBlock = `<REF><RID>${rid}</RID>${rtl ? `<RTL>${rtl}</RTL>` : ''}</REF>`;
+    let next = raw;
+    if (/<SPT>[\s\S]*?<TTL>REFERENCES<\/TTL>/i.test(raw)) {
+      next = raw.replace(
+        /(<SPT>[\s\S]*?<TTL>REFERENCES<\/TTL>)([\s\S]*?)(<\/SPT>)/i,
+        (_m, a, mid, c) => `${a}${mid}${refBlock}${c}`
+      );
+    } else {
+      setStatus('No SPT REFERENCES host found — refuse to invent structure (fail-closed).', true);
+      return;
+    }
+    if (next === raw) {
+      setStatus('Could not locate a safe REFERENCES insertion point.', true);
+      return;
+    }
+    const beforeHash = sec.hash;
+    sec.text = next;
+    sec.parsed = parseSec(next);
+    sec.parsed._raw = next;
+    const afterHash = await hashSecText(next);
+    sec.hash = afterHash;
+    sec.lineage = updateCurrentHash(sec.lineage, afterHash);
+    sec.journal = appendOp(
+      sec.journal,
+      textEditOp({
+        author: { displayName: state.authorName || 'unspecified', id: null },
+        beforeHash,
+        afterHash,
+        rationale: `Add REF ${rid}`,
+      })
+    );
+    runJobQc();
+    setStatus(`Added REF ${rid}.`);
+    render();
+  });
+
 }
 
 render();

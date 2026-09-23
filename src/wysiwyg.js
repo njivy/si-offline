@@ -41,13 +41,10 @@ export function toolbarHtml() {
   return `<div class="wysiwyg-toolbar" id="wysiwyg-toolbar" role="toolbar" aria-label="Section formatting">
     <button type="button" class="primary" data-cmd="pick-options" title="Guided SpecsIntact option picker at caret">Pick options</button>
     <span class="wysiwyg-toolbar-sep"></span>
-    <button type="button" data-cmd="bold" title="Bold (visual; not stored in .sec)"><strong>B</strong></button>
-    <button type="button" data-cmd="italic" title="Italic (visual; not stored in .sec)"><em>I</em></button>
-    <span class="wysiwyg-toolbar-sep"></span>
     <button type="button" data-cmd="wrap-rid" title="Wrap selection as RID">RID</button>
     <button type="button" data-cmd="wrap-sub" title="Wrap selection as SUB">SUB</button>
     <button type="button" data-cmd="wrap-srf" title="Wrap selection as SRF">SRF</button>
-    <span class="hint">Pick options floats on the pink brackets · click a group or place caret</span>
+    <span class="hint">No Bold/Italic — SpecsIntact .sec has no character-style tags; we will not pretend.</span>
   </div>
   <div id="bracket-picker" class="bracket-picker bp-popover" hidden role="dialog" aria-label="Pick options"></div>`;
 }
@@ -515,15 +512,6 @@ export function bindWysiwyg(toolbarEl, rootEl, hooks = {}) {
     ev.preventDefault();
     const cmd = btn.getAttribute('data-cmd');
     const sec = hooks.getSec?.() || null;
-
-    if (cmd === 'bold' || cmd === 'italic') {
-      try {
-        rootEl.ownerDocument.execCommand(cmd === 'bold' ? 'bold' : 'italic', false, null);
-      } catch {
-        wrapSelectionInline(rootEl, cmd === 'bold' ? 'strong' : 'em');
-      }
-      return;
-    }
 
     if (cmd === 'pick-options') {
       // Flush DOM → tree so host text matches what the user sees.
