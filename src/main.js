@@ -13,10 +13,13 @@ import {
   applyEditableDom,
   serializeFromTree,
   bindWysiwyg,
+  applyChoiceInTree,
+  applyFillInTree,
 } from './wysiwyg.js';
 
 const SAMPLE = sampleJobUrl;
 const app = document.querySelector('#app');
+const APP_VERSION = '0.4.0';
 
 let state = {
   view: 'home',
@@ -108,7 +111,6 @@ async function loadSample() {
 async function exportJob() {
   if (!state.job) return;
   try {
-    // Flush any in-progress inline edits on the selected section first.
     await flushInlineToSection(false);
     state.job.qc = state.findings;
     const blob = await buildJobZip(state.job);
@@ -141,7 +143,6 @@ async function flushInlineToSection(journal = true) {
   localStorage.setItem('si-offline-author', state.authorName || '');
 
   applyEditableDom(root, sec.parsed);
-  // Keep section title in sync with STL if present.
   const stl = (sec.parsed.children || []).find((c) => c && c.tag === 'STL');
   if (stl) {
     const t = (stl.children || []).map((c) => (typeof c === 'string' ? c : '')).join('');
@@ -232,13 +233,93 @@ function onTreeMutated(secTree) {
   const sec = selectedSection();
   if (!sec) return;
   sec.parsed = secTree;
-  // Soft-update working .sec bytes so QC/export see the pick; journal on Save.
   try {
     sec.text = serializeFromTree(secTree);
   } catch {
     /* keep prior text */
   }
   runJobQc();
+  render();
+}
+
+/**
+ * Persist a section tree to bytes + optional journal.
+ */
+async function commitSectionTree(sec, rationale, { journal = true } = {}) {
+  const next = serializeFromTree(sec.parsed);
+  const beforeHash = sec.hash;
+  const afterHash = await hashSecText(next);
+  sec.text = next;
+  sec.hash = afterHash;
+  sec.parsed = parseSec(next);
+  sec.parsed.number = sec.parsed.number || sec.number;
+  sec.title = sec.parsed.title || sec.title;
+  sec.lineage = updateCurrentHash(sec.lineage, afterHash);
+  if (journal && beforeHash !== afterHash) {
+    const author = { displayName: state.authorName || 'unspecified', id: null };
+    sec.journal = appendOp(
+      sec.journal,
+      textEditOp({
+        author,
+        beforeHash,
+        afterHash,
+        beforeSnippet: '',
+        afterSnippet: '',
+        rationale: rationale || null,
+      })
+    );
+  }
+  return beforeHash !== afterHash;
+}
+
+/**
+ * Guided picker apply — local or Job-wide batch (SpecsIntact-safe consecutive groups).
+ */
+async function onBracketApply(decision) {
+  if (!state.job || !decision) return;
+  const root = document.getElementById('wysiwyg-root');
+  const current = selectedSection();
+  if (current && root) applyEditableDom(root, current.parsed);
+
+  const label =
+    decision.fillValue != null
+      ? `fill → "${decision.fillValue}"`
+      : `keep "${decision.options[decision.choice[0]]}"`;
+  const rationaleBase = `Bracket pick: ${label} · pattern ${decision.options.map((o) => `[${o}]`).join('')}`;
+
+  let totalHits = 0;
+  const touched = [];
+
+  const targets = decision.batch
+    ? state.job.sections
+    : current
+      ? [current]
+      : [];
+
+  for (const sec of targets) {
+    let n = 0;
+    if (decision.fillValue != null) {
+      n = applyFillInTree(sec.parsed, decision.signature, decision.fillValue, { all: true });
+    } else {
+      n = applyChoiceInTree(sec.parsed, decision.signature, decision.choice, { all: true });
+    }
+    if (!n) continue;
+    totalHits += n;
+    const why = decision.batch
+      ? `${rationaleBase} · Job-wide batch (${decision.jobCount?.total || '?'} previewed)`
+      : rationaleBase;
+    const changed = await commitSectionTree(sec, why, { journal: true });
+    if (changed) touched.push(sec.number);
+  }
+
+  runJobQc();
+  if (!totalHits) {
+    state.status = 'No safe bracket match to apply (fail-closed).';
+  } else if (decision.batch) {
+    state.status = `Applied bracket choice Job-wide · ${totalHits} match(es) in ${touched.length} section(s): ${touched.join(', ')}`;
+  } else {
+    state.status = `Applied bracket choice here · ${totalHits} match(es). Save already journaled.`;
+  }
   render();
 }
 
@@ -249,12 +330,12 @@ function renderHome() {
     </div>
     <header class="topbar">
       <h1>Offline SI</h1>
-      <span class="meta">v0.3.0 · inline WYSIWYG</span>
+      <span class="meta">v${APP_VERSION} · guided bracket picker</span>
     </header>
     <main class="main">
       <div class="card">
         <h3>Open a Job of .sec files</h3>
-        <p class="hint">Import a ZIP of sections or loose <code>.sec</code> files. Edit inline in the section body (click-and-type).</p>
+        <p class="hint">Import a ZIP of sections or loose <code>.sec</code> files. Edit inline; use <strong>Pick options</strong> for SpecsIntact brackets (with Job-wide batch).</p>
         <div class="home-actions">
           <label class="btn primary file-btn">Import Job ZIP<input type="file" id="file-zip" accept=".zip,application/zip" /></label>
           <label class="btn file-btn">Import .sec files<input type="file" id="file-sec" accept=".sec,.xml,text/xml" multiple /></label>
@@ -298,10 +379,10 @@ function renderJob() {
     : '<p class="hint">Select a section.</p>';
 
   return `
-    <div class="proposal-banner">Offline SI — working files only. Process &amp; Print remains official SpecsIntact. Click in the body to edit.</div>
+    <div class="proposal-banner">Offline SI — working files only. Process &amp; Print remains official SpecsIntact. <strong>Pick options</strong> for brackets.</div>
     <header class="topbar">
       <h1>Offline SI</h1>
-      <span class="meta">${escapeHtml(job.job.name || '')} · ${job.sections.length} sections · ${q.errors} QC errors · v0.3.0</span>
+      <span class="meta">${escapeHtml(job.job.name || '')} · ${job.sections.length} sections · ${q.errors} QC errors · v${APP_VERSION}</span>
       <button type="button" id="btn-home">Close Job</button>
       <button type="button" class="primary" id="btn-export">Export Job ZIP</button>
     </header>
@@ -395,7 +476,9 @@ function bind() {
   if (root && toolbar) {
     unbindWy = bindWysiwyg(toolbar, root, {
       getSec: () => selectedSection()?.parsed || null,
+      getJob: () => state.job,
       onTreeMutated,
+      onBracketApply,
     });
   }
 }

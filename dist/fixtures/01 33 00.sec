@@ -14,6 +14,11 @@
 <TXT>Use submittal descriptions SD-01 through SD-11 as listed in this Section.</TXT>
 <TXT>Coordinate submittal items tagged <SUB>SD-03 Product Data</SUB> in technical Sections.</TXT>
 </SPT>
+<SPT>
+<TTL>MOCK-UPS</TTL>
+<NTE>Specifier: Choose construction method; same bracket pattern appears in 03 30 00 for Job-wide batch demo.</NTE>
+<TXT>Mock-ups shall use [cast-in-place][precast] concrete when required by the Contracting Officer.</TXT>
+</SPT>
 </PRT>
 <PRT>
 <TTL>PART 2 PRODUCTS</TTL>

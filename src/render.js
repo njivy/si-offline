@@ -1,4 +1,5 @@
 import { textContent } from './sec/parse.js';
+import { findBracketGroups } from './bracket.js';
 
 export function escapeHtml(s) {
   return String(s ?? '')
@@ -101,14 +102,43 @@ export function renderNode(node, opts = {}) {
   }
 }
 
+/**
+ * Highlight SpecsIntact consecutive bracket groups.
+ * Each token gets data-bgroup / data-bopt / data-bsig for the guided picker.
+ */
 function decorateText(text, opts) {
   const showBrackets = opts.showBrackets !== false;
-  const esc = escapeHtml(text);
-  if (!showBrackets) return esc;
-  return esc.replace(
-    /\[([^\[\]]{0,400})\]/g,
-    '<span class="bracket" data-bracket="1">[$1]</span>'
-  );
+  if (!showBrackets) return escapeHtml(text);
+
+  const groups = findBracketGroups(text);
+  if (!groups.length) return escapeHtml(text);
+
+  let out = '';
+  let cursor = 0;
+  let gid = 0;
+  for (const g of groups) {
+    out += escapeHtml(text.slice(cursor, g.start));
+    const sig = escapeHtml(JSON.stringify(g.options));
+    const kind = escapeHtml(g.kind);
+    // Re-scan tokens inside raw to wrap each [opt].
+    const raw = g.raw;
+    let local = 0;
+    const tokRe = /\[([^\[\]]{0,400})\]/g;
+    let tm;
+    let optIdx = 0;
+    while ((tm = tokRe.exec(raw)) !== null) {
+      if (tm.index > local) out += escapeHtml(raw.slice(local, tm.index));
+      const inner = escapeHtml(tm[1]);
+      out += `<span class="bracket" data-bracket="1" data-bgroup="${gid}" data-bopt="${optIdx}" data-bkind="${kind}" data-bsig="${sig}">[${inner}]</span>`;
+      optIdx++;
+      local = tm.index + tm[0].length;
+    }
+    if (local < raw.length) out += escapeHtml(raw.slice(local));
+    cursor = g.end;
+    gid++;
+  }
+  out += escapeHtml(text.slice(cursor));
+  return out;
 }
 
 export function renderSectionHtml(sec, opts = {}) {

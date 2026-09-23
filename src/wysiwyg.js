@@ -1,5 +1,15 @@
 import { escapeHtml, renderSectionHtml } from './render.js';
 import { serializeSec } from './sec/serialize.js';
+import {
+  findBracketGroups,
+  groupSignature,
+  groupContainingOption,
+  applyChoiceToText,
+  applyFillToText,
+  applyChoiceInTree,
+  applyFillInTree,
+  countSignatureInJob,
+} from './bracket.js';
 
 let nidSeq = 0;
 
@@ -25,24 +35,24 @@ export function renderEditableHtml(sec) {
 }
 
 /**
- * SpecsIntact-oriented toolbar: B/I (visual; .sec has no native bold/italic),
- * bracket pick, and RID / SUB / SRF wraps.
+ * SpecsIntact-oriented toolbar: guided bracket picker is the primary path.
  */
 export function toolbarHtml() {
   return `<div class="wysiwyg-toolbar" id="wysiwyg-toolbar" role="toolbar" aria-label="Section formatting">
+    <button type="button" class="primary" data-cmd="pick-options" title="Guided SpecsIntact option picker at caret">Pick options</button>
+    <span class="wysiwyg-toolbar-sep"></span>
     <button type="button" data-cmd="bold" title="Bold (visual; not stored in .sec)"><strong>B</strong></button>
     <button type="button" data-cmd="italic" title="Italic (visual; not stored in .sec)"><em>I</em></button>
     <span class="wysiwyg-toolbar-sep"></span>
-    <button type="button" data-cmd="pick-bracket" title="Keep the selected bracket option">Pick bracket</button>
     <button type="button" data-cmd="wrap-rid" title="Wrap selection as RID">RID</button>
     <button type="button" data-cmd="wrap-sub" title="Wrap selection as SUB">SUB</button>
     <button type="button" data-cmd="wrap-srf" title="Wrap selection as SRF">SRF</button>
-    <span class="hint">Click pink brackets to keep an option · type in the body · B/I are visual-only</span>
-  </div>`;
+    <span class="hint">Pick options = SpecsIntact brackets · click a pink group · type in the body</span>
+  </div>
+  <div id="bracket-picker" class="bracket-picker" hidden></div>`;
 }
 
 function unwrapFormatting(el) {
-  // Flatten strong/em/b/i/u (no native SI tags) so serialize stays .sec-clean.
   const clone = el.cloneNode(true);
   clone.querySelectorAll('strong, em, b, i, u').forEach((n) => {
     const parent = n.parentNode;
@@ -70,10 +80,19 @@ function childrenFromDom(el) {
       out.push({ tag: tagName, attrs: {}, children: childrenFromDom(child) });
       continue;
     }
-    // Unknown wrapper (div/span from paste) — hoist children.
     out.push(...childrenFromDom(child));
   }
-  return out;
+  // Merge adjacent strings so consecutive SpecsIntact tokens [A][B] stay one group
+  // (DOM decoration splits them into separate span nodes).
+  const merged = [];
+  for (const c of out) {
+    if (typeof c === 'string' && merged.length && typeof merged[merged.length - 1] === 'string') {
+      merged[merged.length - 1] += c;
+    } else {
+      merged.push(c);
+    }
+  }
+  return merged;
 }
 
 export function applyEditableDom(rootEl, sec) {
@@ -85,6 +104,10 @@ export function applyEditableDom(rootEl, sec) {
   return sec;
 }
 
+/**
+ * Legacy helper: unwrap a single token Job-wide if it uniquely identifies a group choice.
+ * Prefer applyBracketDecision via the picker.
+ */
 export function pickBracketInTree(sec, rawOption) {
   const needle = String(rawOption || '').replace(/^\[|\]$/g, '');
   function walk(n) {
@@ -92,7 +115,11 @@ export function pickBracketInTree(sec, rawOption) {
     if (Array.isArray(n.children)) {
       n.children = n.children.map((c) => {
         if (typeof c !== 'string') return c;
-        return c.replace(/\[([^\[\]]{0,400})\]/g, (m, inner) => (inner === needle ? inner : m));
+        const g = groupContainingOption(c, needle);
+        if (!g) return c;
+        // SpecsIntact: keep chosen option, drop sibling tokens in the same consecutive group.
+        const applied = applyChoiceToText(c, g, [needle]);
+        return applied == null ? c : applied;
       });
     }
     for (const c of n.children || []) walk(c);
@@ -155,14 +182,217 @@ function wrapSelectionInline(rootEl, tagName) {
 }
 
 /**
- * Bind toolbar + bracket clicks.
+ * Resolve the editable host + plain text + caret offset for bracket detection.
+ */
+function caretContext(rootEl, fromEl = null) {
+  const doc = rootEl.ownerDocument;
+  const sel = doc.getSelection?.() || window.getSelection();
+  let host = fromEl?.closest?.('[contenteditable="true"]') || null;
+  let offset = 0;
+  let text = '';
+
+  if (!host && sel && sel.rangeCount) {
+    const node = sel.anchorNode;
+    if (node && rootEl.contains(node)) {
+      host = (node.nodeType === 1 ? node : node.parentElement)?.closest?.('[contenteditable="true"]');
+    }
+  }
+  if (!host || !rootEl.contains(host)) return null;
+
+  // Flatten host text the same way bracket spans appear (textContent of host).
+  text = host.textContent || '';
+
+  if (sel && sel.rangeCount && host.contains(sel.anchorNode)) {
+    const range = sel.getRangeAt(0).cloneRange();
+    range.selectNodeContents(host);
+    range.setEnd(sel.anchorNode, sel.anchorOffset);
+    offset = range.toString().length;
+  } else if (fromEl && host.contains(fromEl)) {
+    const range = doc.createRange();
+    range.selectNodeContents(host);
+    range.setEndBefore(fromEl);
+    offset = range.toString().length + 1; // inside the bracket token
+  }
+
+  return { host, text, offset, nid: host.getAttribute('data-nid') };
+}
+
+function findGroupFromBracketEl(rootEl, brEl) {
+  const ctx = caretContext(rootEl, brEl);
+  if (!ctx) return null;
+  const sigAttr = brEl.getAttribute('data-bsig');
+  let options = null;
+  if (sigAttr) {
+    try {
+      options = JSON.parse(sigAttr);
+    } catch {
+      options = null;
+    }
+  }
+  const groups = findBracketGroups(ctx.text);
+  let group = null;
+  if (options) {
+    const sig = groupSignature(options);
+    // Prefer the group overlapping caret/click that matches signature.
+    group =
+      groups.find((g) => groupSignature(g.options) === sig && ctx.offset >= g.start && ctx.offset <= g.end) ||
+      groups.find((g) => groupSignature(g.options) === sig) ||
+      null;
+  }
+  if (!group) {
+    group = groups.find((g) => ctx.offset >= g.start && ctx.offset <= g.end) || null;
+  }
+  if (!group) return null;
+  return {
+    ...group,
+    signature: groupSignature(group.options),
+    nid: ctx.nid,
+    hostText: ctx.text,
+  };
+}
+
+function findGroupAtCaret(rootEl) {
+  const ctx = caretContext(rootEl);
+  if (!ctx) return null;
+  const groups = findBracketGroups(ctx.text);
+  const group = groups.find((g) => ctx.offset >= g.start && ctx.offset <= g.end) || null;
+  if (!group) {
+    // If selection is exact option text / bracket text, locate it.
+    const sel = selectedTextIn(rootEl).replace(/^\[|\]$/g, '');
+    if (sel) {
+      const hit = groupContainingOption(ctx.text, sel);
+      if (hit) {
+        return { ...hit, signature: groupSignature(hit.options), nid: ctx.nid, hostText: ctx.text };
+      }
+    }
+    return null;
+  }
+  return { ...group, signature: groupSignature(group.options), nid: ctx.nid, hostText: ctx.text };
+}
+
+/**
+ * Render the guided picker panel.
+ * @param {HTMLElement} panel
+ * @param {object} model
+ */
+export function renderPickerPanel(panel, model) {
+  if (!panel) return;
+  if (!model || !model.group) {
+    panel.hidden = true;
+    panel.innerHTML = '';
+    return;
+  }
+  const g = model.group;
+  const jobCount = model.jobCount || { total: 0, bySection: [] };
+  const previewRows = (jobCount.bySection || [])
+    .map((r) => `<li><code>${escapeHtml(r.number)}</code> · ${r.count} match(es)</li>`)
+    .join('');
+
+  let body;
+  if (g.kind === 'fill') {
+    body = `
+      <p class="hint">Fill-in bracket (SpecsIntact empty / blank option). Enter the value; brackets are removed.</p>
+      <div class="field"><label for="bp-fill">Value</label>
+        <input id="bp-fill" type="text" value="${escapeHtml(model.fillValue || '')}" placeholder="type replacement text" />
+      </div>`;
+  } else if (g.kind === 'single') {
+    body = `
+      <p class="hint">Single bracket — keep text and remove brackets, or replace with a typed value.</p>
+      <label class="bp-opt"><input type="radio" name="bp-choice" value="0" checked />
+        <span>Keep <strong>${escapeHtml(g.options[0])}</strong></span></label>
+      <div class="field"><label for="bp-fill">Or replace with</label>
+        <input id="bp-fill" type="text" value="" placeholder="optional alternate text" />
+      </div>`;
+  } else {
+    const opts = g.options
+      .map(
+        (o, i) =>
+          `<label class="bp-opt"><input type="radio" name="bp-choice" value="${i}" ${i === (model.selectedIndex ?? 0) ? 'checked' : ''} />
+          <span>${escapeHtml(o)}</span></label>`
+      )
+      .join('');
+    body = `
+      <p class="hint">SpecsIntact consecutive options — choose one. Unselected tokens are removed; chosen text stays without brackets.</p>
+      <div class="bp-options" role="listbox" aria-label="Bracket options">${opts}</div>`;
+  }
+
+  const batchBlock =
+    g.kind === 'choice' && jobCount.total > 0
+      ? `<div class="bp-batch">
+          <p><strong>Job-wide:</strong> this pattern appears <strong>${jobCount.total}</strong> time(s).</p>
+          <ul class="bp-preview">${previewRows || '<li class="hint">No section breakdown.</li>'}</ul>
+          <label class="bp-opt"><input type="checkbox" id="bp-batch" ${jobCount.total > 1 ? '' : 'disabled'} ${model.batch ? 'checked' : ''} />
+            Apply this choice to all <strong>${jobCount.total}</strong> match(es) in the Job</label>
+          <p class="hint">Preview counts above are before commit. Batch updates every matching section (journaled).</p>
+        </div>`
+      : g.kind === 'choice'
+        ? `<p class="hint">No other matches of this pattern in the Job.</p>`
+        : '';
+
+  panel.hidden = false;
+  panel.innerHTML = `
+    <div class="bp-head">
+      <strong>Pick options</strong>
+      <span class="hint">${escapeHtml(g.kind)} · ${g.options.length} token(s)</span>
+      <button type="button" class="bp-close" data-bp="close" title="Close">×</button>
+    </div>
+    ${body}
+    ${batchBlock}
+    <div class="bp-actions">
+      <button type="button" class="primary" data-bp="apply">Apply</button>
+      <button type="button" data-bp="cancel">Cancel</button>
+    </div>
+    ${model.error ? `<p class="status error">${escapeHtml(model.error)}</p>` : ''}
+  `;
+}
+
+/**
+ * Bind toolbar + guided bracket picker.
  * @param {object} hooks
- * @param {(sec: object) => void} hooks.onTreeMutated  after bracket/tag ops that require re-render
  * @param {() => object|null} hooks.getSec
- * @returns {() => void} unbind
+ * @param {() => object|null} hooks.getJob  job with .sections
+ * @param {(sec: object) => void} hooks.onTreeMutated
+ * @param {(decision: object) => void|Promise<void>} hooks.onBracketApply
+ *   decision: { signature, options, choice, fillValue, batch, scope: 'here'|'job' }
  */
 export function bindWysiwyg(toolbarEl, rootEl, hooks = {}) {
   if (!toolbarEl || !rootEl) return () => {};
+  const panel =
+    toolbarEl.parentElement?.querySelector('#bracket-picker') ||
+    rootEl.ownerDocument.getElementById('bracket-picker');
+
+  /** @type {null | { group: object, selectedIndex: number, batch: boolean, fillValue: string, jobCount: object }} */
+  let pickerModel = null;
+
+  const closePicker = () => {
+    pickerModel = null;
+    renderPickerPanel(panel, null);
+  };
+
+  const openPicker = (groupInfo, preferredOptIndex = 0) => {
+    if (!groupInfo) {
+      if (panel) {
+        panel.hidden = false;
+        panel.innerHTML = `<div class="bp-head"><strong>Pick options</strong>
+          <button type="button" class="bp-close" data-bp="close">×</button></div>
+          <p class="status error">No SpecsIntact bracket group at the caret. Click a pink bracket, or place the caret inside one.</p>
+          <div class="bp-actions"><button type="button" data-bp="cancel">Close</button></div>`;
+      }
+      return;
+    }
+    const job = hooks.getJob?.();
+    const sections = job?.sections || [];
+    const jobCount = countSignatureInJob(sections, groupInfo.signature);
+    pickerModel = {
+      group: groupInfo,
+      selectedIndex: preferredOptIndex,
+      batch: false,
+      fillValue: groupInfo.kind === 'fill' ? '' : '',
+      jobCount,
+      error: '',
+    };
+    renderPickerPanel(panel, pickerModel);
+  };
 
   const onToolbar = (ev) => {
     const btn = ev.target.closest('[data-cmd]');
@@ -180,16 +410,15 @@ export function bindWysiwyg(toolbarEl, rootEl, hooks = {}) {
       return;
     }
 
-    if (!sec) return;
-
-    if (cmd === 'pick-bracket') {
-      const t = selectedTextIn(rootEl).replace(/^\[|\]$/g, '');
-      if (!t) return;
-      applyEditableDom(rootEl, sec);
-      pickBracketInTree(sec, t);
-      hooks.onTreeMutated?.(sec);
+    if (cmd === 'pick-options') {
+      // Flush DOM → tree so host text matches what the user sees.
+      if (sec) applyEditableDom(rootEl, sec);
+      const info = findGroupAtCaret(rootEl);
+      openPicker(info);
       return;
     }
+
+    if (!sec) return;
 
     if (cmd === 'wrap-rid' || cmd === 'wrap-sub' || cmd === 'wrap-srf') {
       const t = selectedTextIn(rootEl);
@@ -207,18 +436,99 @@ export function bindWysiwyg(toolbarEl, rootEl, hooks = {}) {
     const sec = hooks.getSec?.();
     if (!sec) return;
     ev.preventDefault();
-    const raw = (br.textContent || '').replace(/^\[|\]$/g, '');
+    ev.stopPropagation();
     applyEditableDom(rootEl, sec);
-    pickBracketInTree(sec, raw);
-    hooks.onTreeMutated?.(sec);
+    const optIdx = Number(br.getAttribute('data-bopt') || '0') || 0;
+    const info = findGroupFromBracketEl(rootEl, br);
+    openPicker(info, optIdx);
+  };
+
+  const onPanelClick = async (ev) => {
+    const t = ev.target.closest('[data-bp]');
+    if (!t || !panel?.contains(t)) return;
+    const action = t.getAttribute('data-bp');
+    if (action === 'close' || action === 'cancel') {
+      closePicker();
+      return;
+    }
+    if (action !== 'apply' || !pickerModel) return;
+
+    const g = pickerModel.group;
+    const batchEl = panel.querySelector('#bp-batch');
+    const batch = !!(batchEl && batchEl.checked && g.kind === 'choice');
+    const fillEl = panel.querySelector('#bp-fill');
+    const fillRaw = fillEl ? String(fillEl.value || '') : '';
+
+    let choice = null;
+    let fillValue = null;
+
+    if (g.kind === 'fill') {
+      fillValue = fillRaw;
+      if (!fillValue.trim()) {
+        pickerModel.error = 'Enter a fill-in value (or Cancel).';
+        renderPickerPanel(panel, pickerModel);
+        return;
+      }
+      if (/[\[\]<>]/.test(fillValue)) {
+        pickerModel.error = 'Fill-in cannot contain brackets or markup (fail-closed).';
+        renderPickerPanel(panel, pickerModel);
+        return;
+      }
+    } else if (g.kind === 'single') {
+      if (fillRaw.trim()) {
+        fillValue = fillRaw.trim();
+        if (/[\[\]<>]/.test(fillValue)) {
+          pickerModel.error = 'Replacement cannot contain brackets or markup (fail-closed).';
+          renderPickerPanel(panel, pickerModel);
+          return;
+        }
+      } else {
+        choice = [0];
+      }
+    } else {
+      const checked = panel.querySelector('input[name="bp-choice"]:checked');
+      const idx = checked ? Number(checked.value) : 0;
+      if (!Number.isInteger(idx) || idx < 0 || idx >= g.options.length) {
+        pickerModel.error = 'Select a valid option.';
+        renderPickerPanel(panel, pickerModel);
+        return;
+      }
+      choice = [idx];
+    }
+
+    const decision = {
+      signature: g.signature,
+      options: g.options,
+      kind: g.kind,
+      choice,
+      fillValue,
+      batch,
+      jobCount: pickerModel.jobCount,
+    };
+
+    closePicker();
+    await hooks.onBracketApply?.(decision);
   };
 
   toolbarEl.addEventListener('click', onToolbar);
   rootEl.addEventListener('click', onRootClick);
+  panel?.addEventListener('click', onPanelClick);
+
   return () => {
     toolbarEl.removeEventListener('click', onToolbar);
     rootEl.removeEventListener('click', onRootClick);
+    panel?.removeEventListener('click', onPanelClick);
+    closePicker();
   };
 }
 
+export {
+  findBracketGroups,
+  groupSignature,
+  applyChoiceInTree,
+  applyFillInTree,
+  countSignatureInJob,
+  applyChoiceToText,
+  applyFillToText,
+};
 export { escapeHtml };

@@ -142,3 +142,57 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.86em;
 .txt { margin: 0.35rem 0; }
 .ref { margin: 0.25rem 0; font-size: 0.92rem; }
 .tag { padding: 0.05rem 0.3rem; border-radius: 3px; }
+
+/* Guided bracket / option picker (v0.4) */
+.wysiwyg-toolbar button.primary {
+  background: var(--accent, #2563eb);
+  color: #fff;
+  border-color: transparent;
+  font-weight: 650;
+}
+.bracket-picker {
+  margin: 0 0 0.65rem;
+  padding: 0.65rem 0.75rem;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  border-radius: 8px;
+  color: var(--text);
+}
+.bracket-picker[hidden] { display: none !important; }
+.bp-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+.bp-head .bp-close {
+  margin-left: auto;
+  padding: 0.1rem 0.45rem;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+.bp-options { display: flex; flex-direction: column; gap: 0.25rem; margin: 0.35rem 0; }
+.bp-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  padding: 0.35rem 0.45rem;
+  border-radius: 6px;
+  background: var(--panel, #fff);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 0.88rem;
+}
+.bp-opt:hover { border-color: #f97316; }
+.bp-batch {
+  margin-top: 0.55rem;
+  padding-top: 0.45rem;
+  border-top: 1px dashed #fdba74;
+}
+.bp-preview {
+  margin: 0.25rem 0 0.45rem 1.1rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.bp-actions { display: flex; gap: 0.45rem; margin-top: 0.55rem; }
+.sec-doc .bracket[data-bgroup] { box-shadow: inset 0 -2px 0 rgba(225, 29, 72, 0.35); }
