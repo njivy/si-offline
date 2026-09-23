@@ -4,7 +4,7 @@ Static browser app for **SpecsIntact-style `.sec` Jobs**: open a folder/ZIP of s
 
 Sibling apps: [Offline UFC Reader](https://github.com/njivy/ufc-offline-viewer), [Offline UFC Editor](https://github.com/njivy/ufc-offline-editor). Different document family — do not mix pack formats.
 
-**Status (2026-09-23 PT):** v0.6.0 — inline review comments (sidecar annotations), QC-once sidebar, export QC gate, masters, change log, find, outline, REF form, honest no B/I. Dist is Vite IIFE (`file://`). No CMS.
+**Status (2026-09-23 PT):** v0.6.1 — selection-anchored Add comment bubble, elegant light default + retro-futuristic dark (localStorage), sidecar annotations, QC-once, export gate, masters, change log, find, outline. Dist is Vite IIFE (`file://`). No CMS.
 
 ## Contract
 
@@ -38,8 +38,9 @@ Writes `dist/` with classic scripts for offline use. Open `dist/index.html` via 
 2. Or import your own ZIP / loose `.sec` files.
 3. Select a section; click a pink bracket or **Pick options** for the guided picker.
 4. Choose an option; when the pattern appears elsewhere, preview **N** and optionally **Apply to all N** Job-wide (journaled).
-5. **Review comments** — select text (or click a host), open the **Comments** sidebar tab, type a note, **Add comment**. Inline indigo marks + jump/highlight; edit / resolve / delete. Sidecar only (never in `.sec`). Travels in Job ZIP under `annotations/`.
-5. **Save section + journal** for other inline edits; **Export Job ZIP** writes `.sec` plus sidecars.
+5. **Review comments** — select text (or click a host); an **Add comment** bubble appears next to the highlight (sidebar lists comments). Inline indigo marks + jump/highlight; edit / resolve / delete. Sidecar only (never in `.sec`). Travels in Job ZIP under `annotations/`.
+6. **Theme** — elegant light by default; toggle **Dark theme** for a tasteful retro-futuristic chrome. Preference persists in `localStorage` (works on `file://`).
+7. **Save section + journal** for other inline edits; **Export Job ZIP** writes `.sec` plus sidecars.
 
 ## Stack
 

@@ -15,6 +15,7 @@ import {
   bindWysiwyg,
   applyChoiceInTree,
   applyFillInTree,
+  positionPickerPopover,
 } from './wysiwyg.js';
 import {
   saveMastersLibrary,
@@ -51,7 +52,28 @@ import {
 
 const SAMPLE = sampleJobUrl;
 const app = document.querySelector('#app');
-const APP_VERSION = '0.6.0';
+const APP_VERSION = '0.6.1';
+const THEME_KEY = 'si-offline-theme';
+
+function loadTheme() {
+  try {
+    const t = localStorage.getItem(THEME_KEY);
+    if (t === 'dark' || t === 'light') return t;
+  } catch { /* file:// / private mode */ }
+  return 'light';
+}
+
+function applyTheme(theme) {
+  const next = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', next);
+  try {
+    localStorage.setItem(THEME_KEY, next);
+  } catch { /* ignore */ }
+  return next;
+}
+
+applyTheme(loadTheme());
+
 
 let state = {
   view: 'home',
@@ -70,6 +92,8 @@ let state = {
   annShowResolved: false,
   /** Anchor captured before a re-render (selection is lost on render) */
   pendingAnchor: null,
+  /** Selection bubble: hidden | prompt | compose */
+  annBubbleMode: 'hidden',
   status: '',
   error: '',
   authorName: localStorage.getItem('si-offline-author') || '',
@@ -275,7 +299,246 @@ function addCommentFromSelection() {
     ? ' (section-level — reattach if needed)'
     : '';
   state.status = `Comment added on ${sec.number}${orphanNote}. .sec unchanged.`;
+  hideAnnBubble();
   render();
+}
+
+
+/** Floating Add-comment bubble — lives outside #app so render() does not destroy it. */
+function ensureAnnBubble() {
+  let el = document.getElementById('ann-sel-bubble');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'ann-sel-bubble';
+  el.className = 'ann-sel-bubble';
+  el.hidden = true;
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-label', 'Add review comment');
+  el.innerHTML = `
+    <div class="ann-bubble-caret" aria-hidden="true"></div>
+    <div class="ann-bubble-compact">
+      <button type="button" class="primary" data-ann-bubble="open" title="Add a review comment near this selection (sidecar only)">Add comment</button>
+      <span class="hint ann-bubble-snip-compact"></span>
+    </div>
+    <div class="ann-bubble-compose" hidden>
+      <p class="hint ann-bubble-snip"></p>
+      <textarea id="ann-bubble-draft" rows="3" placeholder="Review note…"></textarea>
+      <div class="ann-bubble-actions">
+        <button type="button" class="primary" data-ann-bubble="submit">Add comment</button>
+        <button type="button" data-ann-bubble="cancel">Cancel</button>
+      </div>
+      <p class="hint">Sidecar only — never written into .sec.</p>
+    </div>`;
+  document.body.appendChild(el);
+  el.addEventListener('mousedown', (ev) => {
+    // Keep selection while interacting with the bubble
+    if (ev.target.closest('textarea, button, input')) return;
+    ev.preventDefault();
+  });
+  el.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-ann-bubble]');
+    if (!btn) return;
+    const action = btn.getAttribute('data-ann-bubble');
+    if (action === 'open') openAnnBubbleCompose();
+    else if (action === 'cancel') hideAnnBubble();
+    else if (action === 'submit') submitAnnBubble();
+  });
+  return el;
+}
+
+function clearAnnSelHosts(root) {
+  root?.querySelectorAll('.ann-sel-host').forEach((n) => n.classList.remove('ann-sel-host'));
+}
+
+function hideAnnBubble() {
+  const el = document.getElementById('ann-sel-bubble');
+  if (el) {
+    el.hidden = true;
+    const compose = el.querySelector('.ann-bubble-compose');
+    const compact = el.querySelector('.ann-bubble-compact');
+    if (compose) compose.hidden = true;
+    if (compact) compact.hidden = false;
+    el.style.top = '';
+    el.style.left = '';
+  }
+  state.annBubbleMode = 'hidden';
+  clearAnnSelHosts(document.getElementById('wysiwyg-root'));
+}
+
+function positionAnnBubbleNearRect(panel, rect) {
+  if (!panel || !rect) return;
+  panel.hidden = false;
+  const place = () => {
+    const pw = Math.min(panel.offsetWidth || 280, window.innerWidth - 16);
+    const ph = panel.offsetHeight || 48;
+    let top = rect.bottom + 10;
+    if (top + ph > window.innerHeight - 8) {
+      top = Math.max(8, rect.top - ph - 10);
+    }
+    let left = rect.left;
+    if (left + pw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - pw - 8);
+    if (left < 8) left = 8;
+    panel.style.top = `${Math.round(top)}px`;
+    panel.style.left = `${Math.round(left)}px`;
+    const caret = panel.querySelector('.ann-bubble-caret');
+    if (caret) {
+      const below = top >= rect.bottom - 1;
+      const caretLeft = Math.min(Math.max(12, rect.left + rect.width / 2 - left - 6), pw - 18);
+      caret.style.left = `${Math.round(caretLeft)}px`;
+      if (below) {
+        caret.style.top = '-6px';
+        caret.style.bottom = 'auto';
+        caret.style.transform = 'rotate(45deg)';
+      } else {
+        caret.style.top = 'auto';
+        caret.style.bottom = '-6px';
+        caret.style.transform = 'rotate(225deg)';
+      }
+    }
+  };
+  place();
+  requestAnimationFrame(place);
+}
+
+function selectionRectInRoot(root) {
+  const sel = root?.ownerDocument?.getSelection?.();
+  if (!sel || !sel.rangeCount || sel.isCollapsed) return null;
+  if (!root.contains(sel.anchorNode)) return null;
+  const range = sel.getRangeAt(0);
+  const rect = range.getBoundingClientRect();
+  if (!rect || (rect.width === 0 && rect.height === 0)) return null;
+  return { rect, snippet: String(range.toString() || '').replace(/\s+/g, ' ').trim() };
+}
+
+function syncAnnBubble(root, { hostEl = null } = {}) {
+  if (!root || state.view !== 'job') {
+    if (state.annBubbleMode !== 'compose') hideAnnBubble();
+    return;
+  }
+  // While composing, keep bubble; only reposition if we still have a pending anchor host
+  if (state.annBubbleMode === 'compose') return;
+
+  const panel = ensureAnnBubble();
+  clearAnnSelHosts(root);
+  const selInfo = selectionRectInRoot(root);
+  let rect = selInfo?.rect || null;
+  let snippet = selInfo?.snippet || '';
+  let host = hostEl;
+
+  if (!rect && host && root.contains(host)) {
+    rect = host.getBoundingClientRect();
+    snippet = String(host.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 48);
+  }
+
+  if (!rect) {
+    hideAnnBubble();
+    return;
+  }
+
+  // Capture durable anchor while selection is live
+  const anchor = captureAnchorFromSelection(root, { hostEl: host || null });
+  if (anchor && anchor.kind !== 'section') state.pendingAnchor = anchor;
+  else if (anchor) state.pendingAnchor = anchor;
+
+  if (host && root.contains(host)) host.classList.add('ann-sel-host');
+  else if (anchor?.nid) {
+    const el = root.querySelector(`[data-nid="${CSS.escape(anchor.nid)}"]`);
+    el?.classList.add('ann-sel-host');
+  }
+
+  const compact = panel.querySelector('.ann-bubble-compact');
+  const compose = panel.querySelector('.ann-bubble-compose');
+  if (compact) compact.hidden = false;
+  if (compose) compose.hidden = true;
+  const snipEl = panel.querySelector('.ann-bubble-snip-compact');
+  if (snipEl) snipEl.textContent = snippet ? `“${snippet.slice(0, 40)}${snippet.length > 40 ? '…' : ''}”` : 'Near selection';
+  state.annBubbleMode = 'prompt';
+  positionAnnBubbleNearRect(panel, rect);
+}
+
+function openAnnBubbleCompose() {
+  const root = document.getElementById('wysiwyg-root');
+  const panel = ensureAnnBubble();
+  // Freeze anchor before selection collapses into the textarea
+  if (root) {
+    const a = captureAnchorFromSelection(root);
+    if (a) state.pendingAnchor = a;
+  }
+  const compact = panel.querySelector('.ann-bubble-compact');
+  const compose = panel.querySelector('.ann-bubble-compose');
+  if (compact) compact.hidden = true;
+  if (compose) compose.hidden = false;
+  const snip = panel.querySelector('.ann-bubble-snip');
+  const pending = state.pendingAnchor;
+  if (snip) {
+    const s = pending?.snippet || '';
+    snip.textContent = s
+      ? `Anchored to: “${s.slice(0, 72)}${s.length > 72 ? '…' : ''}”`
+      : pending?.kind === 'host'
+        ? `Anchored to ${pending.tag || 'host'}`
+        : 'Section-level comment (no span selected)';
+  }
+  const ta = panel.querySelector('#ann-bubble-draft');
+  if (ta) {
+    ta.value = state.annDraft || '';
+    setTimeout(() => ta.focus(), 0);
+  }
+  state.annBubbleMode = 'compose';
+  state.sideTab = 'comments';
+  // Reposition using last known style or pending host
+  const host =
+    (pending?.nid && root?.querySelector(`[data-nid="${CSS.escape(pending.nid)}"]`)) ||
+    root?.querySelector('.ann-sel-host');
+  if (host) positionPickerPopover(panel, host);
+  else {
+    // keep current fixed position; just remeasure
+    requestAnimationFrame(() => {
+      const r = { top: parseFloat(panel.style.top) || 80, bottom: (parseFloat(panel.style.top) || 80) + 20, left: parseFloat(panel.style.left) || 80, width: 40, height: 20 };
+      // no-op if already placed
+    });
+  }
+}
+
+function submitAnnBubble() {
+  const panel = ensureAnnBubble();
+  const ta = panel.querySelector('#ann-bubble-draft');
+  const body = (ta?.value || '').trim();
+  if (!body) {
+    setStatus('Type a comment in the bubble, then Add comment.', true);
+    ta?.focus();
+    return;
+  }
+  state.annDraft = body;
+  hideAnnBubble();
+  addCommentFromSelection();
+}
+
+let annBubbleDocBound = false;
+function bindAnnBubbleDocOnce() {
+  if (annBubbleDocBound) return;
+  annBubbleDocBound = true;
+  document.addEventListener('selectionchange', () => {
+    if (state.annBubbleMode === 'compose') return;
+    const root = document.getElementById('wysiwyg-root');
+    if (!root) return;
+    const sel = document.getSelection();
+    if (!sel || !root.contains(sel.anchorNode)) return;
+    if (!sel.isCollapsed) requestAnimationFrame(() => syncAnnBubble(root));
+  });
+  document.addEventListener('mousedown', (ev) => {
+    if (state.annBubbleMode !== 'prompt') return;
+    const bubble = document.getElementById('ann-sel-bubble');
+    const root = document.getElementById('wysiwyg-root');
+    if (bubble?.contains(ev.target) || root?.contains(ev.target)) return;
+    hideAnnBubble();
+  });
+}
+
+function themeToggleHtml() {
+  const theme = document.documentElement.getAttribute('data-theme') || 'light';
+  const label = theme === 'dark' ? 'Light theme' : 'Dark theme';
+  const pressed = theme === 'dark' ? 'true' : 'false';
+  return `<button type="button" class="theme-toggle" id="btn-theme" aria-pressed="${pressed}" title="Toggle elegant light / retro-futuristic dark (saved in localStorage)">${label}</button>`;
 }
 
 function runJobQc() {
@@ -591,6 +854,7 @@ function renderHome() {
     <header class="topbar">
       <h1>Offline SI</h1>
       <span class="meta">v${APP_VERSION} · review comments + QC</span>
+      ${themeToggleHtml()}
     </header>
     <main class="main">
       <div class="card">
@@ -680,6 +944,7 @@ function renderJob() {
       <button type="button" id="btn-masters">Masters</button>
       <button type="button" id="btn-changelog">Change log</button>
       <button type="button" id="btn-home">Close Job</button>
+      ${themeToggleHtml()}
       <button type="button" class="primary" id="btn-export">Export Job ZIP</button>
     </header>
     <div class="layout">
@@ -710,7 +975,7 @@ function renderJob() {
             <div class="field inline"><label for="author-name">Author</label><input id="author-name" value="${escapeHtml(state.authorName)}" placeholder="display name" /></div>
             <div class="field inline grow"><label for="edit-rationale">Rationale</label><input id="edit-rationale" value="${escapeHtml(state.rationale)}" placeholder="optional save note" /></div>
             <button type="button" class="primary" id="btn-save">Save section + journal</button>
-            <button type="button" id="btn-add-comment" title="Select text (or click a host) then add a review comment — sidecar only">Add comment</button>
+            <button type="button" id="btn-add-comment" title="Opens Comments sidebar (prefer the bubble next to your selection)">Add comment…</button>
           </div>
           ${toolbarHtml()}
           <div class="paper wysiwyg-surface" data-mode="edit" id="wysiwyg-root">${paper}</div>
@@ -733,7 +998,7 @@ function renderJob() {
         <p class="hint">Click a finding to jump and highlight it in the section body. Detail stays in this sidebar (once).</p>
         ${findings || '<p class="hint">No findings.</p>'}
         ` : `
-        <p class="hint">Select text or click a host, type below, then <strong>Add comment</strong>. Sidecar only — never written into .sec.</p>
+        <p class="hint">Select text (or a host) — an <strong>Add comment</strong> bubble appears next to the selection. Sidebar lists comments; sidecar only — never written into .sec.</p>
         <div class="ann-composer">
           <textarea id="ann-draft" rows="3" placeholder="Review note…">${escapeHtml(state.annDraft)}</textarea>
           <div class="ann-composer-actions">
@@ -853,6 +1118,13 @@ function render() {
 }
 
 function bind() {
+  document.getElementById('btn-theme')?.addEventListener('click', () => {
+    const cur = document.documentElement.getAttribute('data-theme') || 'light';
+    applyTheme(cur === 'dark' ? 'light' : 'dark');
+    render();
+  });
+  if (state.view !== 'job') hideAnnBubble();
+
   document.getElementById('file-zip')?.addEventListener('change', (e) => {
     const f = e.target.files?.[0];
     if (f) importZipFile(f, false);
@@ -868,6 +1140,8 @@ function bind() {
     state.findings = [];
     state.qcFocus = null;
     state.annFocus = null;
+    state.pendingAnchor = null;
+    hideAnnBubble();
     render();
   });
   document.getElementById('btn-export')?.addEventListener('click', exportJob);
@@ -914,6 +1188,45 @@ function bind() {
       onTreeMutated,
       onBracketApply,
     });
+  }
+
+  // Selection-anchored Add comment bubble (v0.6.1) — mirrors Pick-options / QC proximity
+  ensureAnnBubble();
+  bindAnnBubbleDocOnce();
+  if (root) {
+    const onSelMaybe = () => {
+      if (state.annBubbleMode === 'compose') return;
+      requestAnimationFrame(() => syncAnnBubble(document.getElementById('wysiwyg-root')));
+    };
+    root.addEventListener('mouseup', onSelMaybe);
+    root.addEventListener('keyup', onSelMaybe);
+    root.addEventListener('click', (ev) => {
+      if (state.annBubbleMode === 'compose') return;
+      if (ev.target.closest('.bracket, .bp-opt, button, a, input, textarea, .ann-sel-bubble')) return;
+      const r = document.getElementById('wysiwyg-root');
+      const sel = document.getSelection();
+      if (sel && !sel.isCollapsed && r?.contains(sel.anchorNode)) {
+        requestAnimationFrame(() => syncAnnBubble(r));
+        return;
+      }
+      let host = ev.target;
+      if (host.nodeType === 3) host = host.parentElement;
+      while (host && host !== r) {
+        if (
+          host.getAttribute?.('data-nid') ||
+          host.getAttribute?.('data-tag') ||
+          host.classList?.contains('txt') ||
+          host.classList?.contains('ttl') ||
+          host.classList?.contains('sec-title')
+        ) {
+          requestAnimationFrame(() => syncAnnBubble(r, { hostEl: host }));
+          return;
+        }
+        host = host.parentElement;
+      }
+    });
+  } else {
+    hideAnnBubble();
   }
 
   // Inline QC marks + jump/highlight for the open section
@@ -1008,21 +1321,26 @@ function bind() {
   document.getElementById('btn-add-comment')?.addEventListener('click', () => {
     const r = document.getElementById('wysiwyg-root');
     const a = captureAnchorFromSelection(r);
-    if (a && a.kind !== 'section') state.pendingAnchor = a;
+    if (a) state.pendingAnchor = a;
     state.sideTab = 'comments';
     const draft = (document.getElementById('ann-draft')?.value || state.annDraft || '').trim();
     if (draft) {
       state.annDraft = draft;
+      hideAnnBubble();
       addCommentFromSelection();
-    } else {
-      render();
-      setTimeout(() => document.getElementById('ann-draft')?.focus(), 0);
-      setStatus(
-        state.pendingAnchor
-          ? 'Anchor captured. Type a comment in the sidebar, then Add comment.'
-          : 'Select text in the body (optional), type a comment in the sidebar, then Add comment.'
-      );
+      return;
     }
+    // Prefer proximity bubble when there is a live selection / host
+    const selInfo = selectionRectInRoot(r);
+    if (selInfo || (a && a.kind !== 'section')) {
+      syncAnnBubble(r);
+      openAnnBubbleCompose();
+      setStatus('Type your comment in the bubble next to the selection.');
+      return;
+    }
+    render();
+    setTimeout(() => document.getElementById('ann-draft')?.focus(), 0);
+    setStatus('Select text in the body (bubble appears), or type a comment in the sidebar.');
   });
   document.querySelectorAll('[data-ann-jump]').forEach((el) => {
     el.addEventListener('click', (ev) => {
