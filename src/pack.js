@@ -33,6 +33,7 @@ export async function loadJobFromZipBuffer(buf, { asMaster = false, sourceLabel 
   const sections = [];
   for (const f of files) {
     const parsed = parseSec(f.text);
+    parsed._raw = f.text;
     const number = parsed.number || sectionNumberFromName(f.path);
     parsed.number = number;
     const hash = await hashSecText(f.text);
@@ -79,11 +80,19 @@ export async function loadJobFromZipBuffer(buf, { asMaster = false, sourceLabel 
     sections.push({ number, title: parsed.title, path: f.path, text: f.text, parsed, hash, lineage, journal });
   }
 
+  
+  let outline = null;
+  const outlinePath = Object.keys(filesMap).find((p) => /outline\.json$/i.test(p));
+  if (outlinePath) {
+    try { outline = JSON.parse(filesMap[outlinePath]); } catch { outline = null; }
+  }
+
   return {
     sourceLabel: sourceLabel || 'ZIP',
     asMaster,
     job: jobMeta?.job || { name: guessJobName(sourceLabel), title: '', contract: '', location: '', leadSpecifier: '' },
     marking: jobMeta?.marking ?? null,
+    outline: outline ? { statuses: outline.statuses || {} } : { statuses: {} },
     sections,
   };
 }
@@ -123,6 +132,21 @@ export async function buildJobZip(jobState) {
       findings: jobState.qc,
     }, null, 2);
   }
+  
+  if (jobState.outline) {
+    files['outline.json'] = JSON.stringify({
+      format: 'si-offline-outline',
+      formatVersion: 1,
+      exportedAt: new Date().toISOString(),
+      statuses: jobState.outline.statuses || {},
+    }, null, 2);
+  }
+  if (jobState.changelog) {
+    files['changelog.json'] = JSON.stringify(jobState.changelog, null, 2);
+    if (jobState.changelogHtml) files['changelog.html'] = jobState.changelogHtml;
+    if (jobState.changelogMd) files['changelog.md'] = jobState.changelogMd;
+  }
+
   return zipToBlob(files);
 }
 
